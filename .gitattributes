@@ -1,0 +1,32 @@
+# --------------------------------------------------
+# .gitattributes for C++ Project
+# Ensures UTF-8 (no BOM), consistent line endings,
+# and proper handling of binary files and text.
+# --------------------------------------------------
+
+# C++ source and header files: text, LF line endings
+*.cpp text eol=lf
+*.hpp text eol=lf
+*.h   text eol=lf
+*.c   text eol=lf
+
+# Text files: documentation, scripts, configs
+*.txt text eol=lf
+*.md  text eol=lf
+*.cmake text eol=lf
+*.in  text eol=lf
+
+# Ignore diff for generated lock files
+*.lock merge=ours
+
+# Binary files: do not treat as text
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.exe binary
+*.dll binary
+*.lib binary
+
+# Force Git to automatically normalize all other text files
+* text=auto

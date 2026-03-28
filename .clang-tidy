@@ -1,0 +1,50 @@
+Checks: >
+  bugprone-*,
+  performance-*,
+  readability-*,
+  modernize-*,
+  cppcoreguidelines-*,
+  -clang-analyzer-alpha.*,
+  -cppcoreguidelines-pro-bounds-array-to-pointer-decay,
+  -hicpp-*,
+  -fuchsia-*,
+  -llvm-include-order
+
+WarningsAsErrors: ''
+
+CheckOptions:
+  # Naming rules - Modern C++ style
+  - key: readability-identifier-naming.ClassCase
+    value: PascalCase
+  - key: readability-identifier-naming.StructCase
+    value: PascalCase
+  - key: readability-identifier-naming.EnumCase
+    value: PascalCase
+  - key: readability-identifier-naming.EnumConstantCase
+    value: CamelCase
+  - key: readability-identifier-naming.FunctionCase
+    value: camelCase
+  - key: readability-identifier-naming.VariableCase
+    value: camelCase
+  - key: readability-identifier-naming.ParameterCase
+    value: camelCase
+  - key: readability-identifier-naming.MemberCase
+    value: camelCase
+  - key: readability-identifier-naming.PrivateMemberSuffix
+    value: _
+  - key: readability-identifier-naming.ConstantCase
+    value: CamelCase
+  - key: readability-identifier-naming.ConstantPrefix
+    value: k
+  - key: readability-identifier-naming.NamespaceCase
+    value: lower_case
+
+  # Misc
+  - key: cppcoreguidelines-avoid-magic-numbers.IgnoreEnums
+    value: '1'
+  - key: cppcoreguidelines-avoid-magic-numbers.IgnoreConstants
+    value: '1'
+
+FormatStyle: file
+HeaderFilterRegex: '.*'
+AnalyzeTemporaryDtors: true

@@ -1,0 +1,73 @@
+# ----------------------------------------
+# C++ Clang-Format (Mainstream / Google-LLVM Aligned)
+# Suitable for modern C++17/20 projects
+# ----------------------------------------
+
+BasedOnStyle: LLVM
+Language: Cpp
+Standard: Latest
+
+# ===== Indentation =====
+IndentWidth: 4
+TabWidth: 4
+UseTab: Never
+IndentCaseLabels: true
+IndentGotoLabels: true
+
+# Do not indent namespace (mainstream practice)
+NamespaceIndentation: None
+
+# ===== Line Length =====
+ColumnLimit: 100
+
+# ===== Braces Style =====
+# K&R style (used by Google, LLVM, Chromium)
+BreakBeforeBraces: Attach
+AllowShortBlocksOnASingleLine: false
+
+# ===== Short Statements =====
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortFunctionsOnASingleLine: Empty
+
+# ===== Spacing Rules =====
+SpaceAfterCStyleCast: true
+SpaceBeforeParens: ControlStatements
+SpacesInParentheses: false
+SpacesInSquareBrackets: false
+SpaceBeforeAssignmentOperators: true
+SpaceAfterTemplateKeyword: true
+SpaceAfterLogicalNot: true
+
+# ===== Pointer Alignment =====
+# Left aligns pointer with type (Google/LLVM style)
+PointerAlignment: Left
+DerivePointerAlignment: false
+
+# ===== Alignment (disable to reduce diff noise) =====
+AlignConsecutiveAssignments: false
+AlignConsecutiveDeclarations: false
+AlignTrailingComments: false
+AlignOperands: true
+
+# ===== Wrapping =====
+# Pack parameters/arguments (mainstream compact style)
+BinPackParameters: true
+BinPackArguments: true
+
+# Constructor initializer formatting
+BreakConstructorInitializers: BeforeComma
+
+PenaltyReturnTypeOnItsOwnLine: 60
+
+# ===== Includes =====
+# Keep include order clean and grouped
+SortIncludes: true
+IncludeBlocks: Regroup
+
+# ===== Comments =====
+ReflowComments: true
+
+# ===== Empty Lines =====
+MaxEmptyLinesToKeep: 1
+SeparateDefinitionBlocks: Leave

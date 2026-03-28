@@ -1,0 +1,81 @@
+# ----------------------------------------------
+# Modern .gitignore for C/C++ projects
+# Supports CMake, VS, GCC/Clang, cross-platform
+# ----------------------------------------------
+
+# Build directories
+build/
+out/
+bin/
+Debug/
+Release/
+x64/
+x86/
+
+# CMake generated files
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+Makefile
+*.cmake
+
+# VS/Visual Studio files
+.vs/
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+*.VC.db
+*.VC.VC.opendb
+*.VC.VC.db
+*.ncb
+*.aps
+*.pch
+*.idb
+*.pdb
+*.ipch
+*.iobj
+*.ipdb
+*.obj
+*.o
+*.lib
+*.dll
+*.exp
+*.exe
+*.manifest
+*.vspscc
+*.vssscc
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Linux
+*~
+*.swp
+*.swo
+
+# Temporary files
+*.log
+*.tmp
+*.temp
+*.bak
+*.backup
+
+# Editor files
+.vscode/
+.idea/
+.cache/
+*.code-workspace
+*.sublime-project
+*.sublime-workspace
+
+# Python / scripts (if any)
+__pycache__/
+*.pyc
+
+# Other generated files
+CMakePresets.json
+CMakeUserPresets.json
+*.stackdump
