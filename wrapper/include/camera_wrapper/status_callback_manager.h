@@ -10,7 +10,7 @@
 namespace camera_wrapper {
 
 /// Camera connection / lifecycle events delivered through the status channel.
-enum class CAMERA_WRAPPER_API CameraStatus {
+enum class CameraStatus {
     Connected, ///< Camera opened and ready
     Disconnected, ///< Camera link lost (hardware disconnect / timeout)
     Reconnecting, ///< Auto-reconnect attempt in progress
