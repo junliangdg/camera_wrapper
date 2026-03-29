@@ -14,18 +14,28 @@ using namespace camera_wrapper;
 // QueuedConnection signals.  Call this once before the event loop starts.
 // (Done in main.cpp via qRegisterMetaType<cv::Mat>().)
 
+// ======================================================================== //
+//  CameraSlot                                                                //
+// ======================================================================== //
+
+CameraBridge::CameraSlot::CameraSlot()
+    : previewQueue(std::make_unique<FrameQueue>(1, OverflowPolicy::DropAll)) {}
+
+// ======================================================================== //
+//  CameraBridge – Constructor / Destructor                                   //
+// ======================================================================== //
+
 CameraBridge::CameraBridge(QObject* parent)
     : QObject(parent)
-    , enumerator_(createEnumerator())
-    , previewQueue_(std::make_unique<FrameQueue>(1, OverflowPolicy::DropAll)) {}
+    , enumerator_(createEnumerator()) {}
 
 CameraBridge::~CameraBridge() {
-    closeCamera();
+    closeAllCameras();
 }
 
-// ------------------------------------------------------------------ //
-//  Device management                                                   //
-// ------------------------------------------------------------------ //
+// ======================================================================== //
+//  Device enumeration                                                        //
+// ======================================================================== //
 
 QVector<QString> CameraBridge::enumerateDevices() {
     deviceList_ = enumerator_->enumerate();
@@ -36,205 +46,277 @@ QVector<QString> CameraBridge::enumerateDevices() {
     return names;
 }
 
-bool CameraBridge::openCamera(int index) {
-    if (index < 0 || index >= static_cast<int>(deviceList_.size()))
-        return false;
+// ======================================================================== //
+//  Per-camera lifecycle                                                      //
+// ======================================================================== //
 
-    closeCamera(); // close any previously open camera
+int CameraBridge::openCamera(int deviceIndex) {
+    if (deviceIndex < 0 || deviceIndex >= static_cast<int>(deviceList_.size()))
+        return -1;
 
-    camera_ = enumerator_->createCamera(deviceList_[index]);
-    if (! camera_)
-        return false;
+    auto slot = std::make_unique<CameraSlot>();
 
-    // Register status callback – invoked from the reconnect/SDK thread.
-    // Use QueuedConnection to marshal to the Qt main thread.
-    statusCbId_ =
-        camera_->registerStatusCallback([this](const StatusEvent& ev) { onStatusEvent(ev); });
+    slot->camera = enumerator_->createCamera(deviceList_[deviceIndex]);
+    if (! slot->camera)
+        return -1;
 
-    if (! camera_->open()) {
-        camera_.reset();
-        return false;
+    // Determine the camera index before registering callbacks so the lambdas
+    // can capture it by value.
+    int cameraIndex = -1;
+    {
+        std::lock_guard<std::mutex> lk(slotsMutex_);
+        cameraIndex = static_cast<int>(slots_.size());
+        slots_.push_back(std::move(slot)); // slot is now owned by slots_
     }
 
-    // Apply default transport config.
+    CameraSlot* s = slots_[cameraIndex].get();
+
+    // Register status callback – invoked from the reconnect / SDK thread.
+    s->statusCbId = s->camera->registerStatusCallback(
+        [this, cameraIndex](const StatusEvent& ev) { onStatusEvent(cameraIndex, ev); });
+
+    if (! s->camera->open()) {
+        // Roll back: unregister the status callback and mark slot as empty.
+        s->camera->unregisterStatusCallback(s->statusCbId);
+        s->statusCbId = -1;
+        std::lock_guard<std::mutex> lk(slotsMutex_);
+        slots_[cameraIndex].reset();
+        return -1;
+    }
     TransportConfig transport;
-    transport.gige.packetSize = 0; // auto-detect
+    transport.gige.packetSize = 0; // auto-detect optimal MTU
     transport.gige.heartbeatTimeoutMs = 3000;
-    camera_->applyTransportConfig(transport);
+    s->camera->applyTransportConfig(transport);
 
     // Register frame callback – invoked from the SDK callback thread.
-    frameCbId_ =
-        camera_->registerFrameCallback([this](const ImageFrame& frame) { onFrameArrived(frame); });
+    s->frameCbId = s->camera->registerFrameCallback(
+        [this, cameraIndex](const ImageFrame& frame) { onFrameArrived(cameraIndex, frame); });
 
     // Start in StreamCallback mode by default.
     GrabConfig cfg;
     cfg.mode = GrabMode::StreamCallback;
-    camera_->configure(cfg);
-    camera_->startGrabbing();
+    s->camera->configure(cfg);
+    s->camera->startGrabbing();
 
-    return true;
+    return cameraIndex;
 }
 
-void CameraBridge::closeCamera() {
-    if (! camera_)
+void CameraBridge::closeCamera(int cameraIndex) {
+    CameraSlot* s = slotAt(cameraIndex);
+    if (! s)
         return;
 
-    if (frameCbId_ >= 0) {
-        camera_->unregisterFrameCallback(frameCbId_);
-        frameCbId_ = -1;
+    if (s->frameCbId >= 0) {
+        s->camera->unregisterFrameCallback(s->frameCbId);
+        s->frameCbId = -1;
     }
-    if (statusCbId_ >= 0) {
-        camera_->unregisterStatusCallback(statusCbId_);
-        statusCbId_ = -1;
+    if (s->statusCbId >= 0) {
+        s->camera->unregisterStatusCallback(s->statusCbId);
+        s->statusCbId = -1;
     }
 
-    camera_->close();
-    camera_.reset();
-    previewQueue_->clear();
+    s->camera->close();
+
+    // Mark slot as empty so slotAt() returns nullptr for this index.
+    std::lock_guard<std::mutex> lk(slotsMutex_);
+    slots_[cameraIndex].reset();
 }
 
-bool CameraBridge::isCameraOpen() const {
-    return camera_ && camera_->isOpened();
+void CameraBridge::closeAllCameras() {
+    // Collect valid indices first to avoid holding the mutex while calling
+    // closeCamera() (which also acquires it).
+    std::vector<int> indices;
+    {
+        std::lock_guard<std::mutex> lk(slotsMutex_);
+        for (int i = 0; i < static_cast<int>(slots_.size()); ++i)
+            if (slots_[i])
+                indices.push_back(i);
+    }
+    for (int idx : indices)
+        closeCamera(idx);
 }
 
-// ------------------------------------------------------------------ //
-//  Acquisition control                                                 //
-// ------------------------------------------------------------------ //
+bool CameraBridge::isCameraOpen(int cameraIndex) const {
+    const CameraSlot* s = slotAt(cameraIndex);
+    return s && s->camera && s->camera->isOpened();
+}
 
-bool CameraBridge::switchMode(GrabMode mode, TriggerSource triggerSource) {
-    if (! camera_)
+int CameraBridge::openCameraCount() const {
+    std::lock_guard<std::mutex> lk(slotsMutex_);
+    int count = 0;
+    for (const auto& slot : slots_)
+        if (slot && slot->camera)
+            ++count;
+    return count;
+}
+
+// ======================================================================== //
+//  Per-camera acquisition control                                            //
+// ======================================================================== //
+
+bool CameraBridge::switchMode(int cameraIndex, GrabMode mode, TriggerSource triggerSource) {
+    CameraSlot* s = slotAt(cameraIndex);
+    if (! s)
         return false;
 
     GrabConfig cfg;
     cfg.mode = mode;
     cfg.triggerSource = triggerSource;
-    return camera_->switchMode(cfg);
+    return s->camera->switchMode(cfg);
 }
 
-bool CameraBridge::sendSoftTrigger() {
-    if (! camera_)
+bool CameraBridge::sendSoftTrigger(int cameraIndex) {
+    CameraSlot* s = slotAt(cameraIndex);
+    if (! s)
         return false;
 
-    // In SnapSync mode the SDK fires no frame callback.
-    // We must call snapSync() ourselves to retrieve the frame.
-    // Do it on a worker thread so the Qt main thread is never blocked.
-    if (camera_->currentMode() == GrabMode::SnapSync) {
-        // Prevent overlapping snap calls (one at a time).
+    // SnapSync mode: snapSync() blocks – run it on a worker thread so the
+    // Qt main thread is never stalled.
+    if (s->camera->currentMode() == GrabMode::SnapSync) {
         bool expected = false;
-        if (! snapRunning_.compare_exchange_strong(expected, true))
-            return false; // previous snap still in flight – ignore
+        if (! s->snapRunning.compare_exchange_strong(expected, true))
+            return false; // previous snap still in flight
 
-        // snapSync() internally fires the software trigger and blocks until
-        // the frame arrives (or times out).  Run it off the main thread.
-        Camera* cam = camera_.get();
-        QThreadPool::globalInstance()->start([this, cam]() {
+        Camera* cam = s->camera.get();
+        FrameQueue* queue = s->previewQueue.get();
+
+        QThreadPool::globalInstance()->start([this, cameraIndex, cam, queue]() {
             auto result = cam->snapSync();
-
-            // Always clear the flag before returning.
-            snapRunning_.store(false);
+            slots_[cameraIndex]->snapRunning.store(false);
 
             if (! result)
-                return; // timeout or error – nothing to display
+                return;
 
-            // Push into the preview queue so statistics are updated.
-            previewQueue_->push(*result);
-            // Pop immediately – we are the sole consumer.
-            auto popped = previewQueue_->pop(0);
+            queue->push(*result);
+            auto popped = queue->pop(0);
 
-            // Marshal the frame to the Qt main thread.
             cv::Mat img = popped ? popped->image : result->image;
             quint64 fid = result->frameId;
             quint64 ts = result->timestampNs;
 
             QMetaObject::invokeMethod(
                 this,
-                [this, img, fid, ts]() {
-                    emit frameReady(img, fid, ts);
-
-                    auto s = previewQueue_->stats();
-                    emit queueStatsUpdated(s.totalPushed, s.totalPopped, s.dropCount);
+                [this, cameraIndex, img, fid, ts, queue]() {
+                    emit frameReady(cameraIndex, img, fid, ts);
+                    auto st = queue->stats();
+                    emit queueStatsUpdated(cameraIndex, st.totalPushed, st.totalPopped,
+                                           st.dropCount);
                 },
                 Qt::QueuedConnection);
         });
 
-        return true; // trigger dispatched asynchronously
+        return true;
     }
 
-    // TriggerCallback / StreamCallback: just fire the trigger;
-    // the SDK callback will deliver the frame via onFrameArrived().
-    return camera_->sendSoftTrigger();
+    // TriggerCallback / StreamCallback: just fire the trigger; the SDK
+    // callback will deliver the frame via onFrameArrived().
+    return s->camera->sendSoftTrigger();
 }
 
-// ------------------------------------------------------------------ //
-//  Camera parameters                                                   //
-// ------------------------------------------------------------------ //
+// ======================================================================== //
+//  Per-camera parameter control                                              //
+// ======================================================================== //
 
-bool CameraBridge::setExposureTime(double us) {
-    return camera_ && camera_->setExposureTime(us);
+bool CameraBridge::setExposureTime(int cameraIndex, double us) {
+    CameraSlot* s = slotAt(cameraIndex);
+    return s && s->camera->setExposureTime(us);
 }
 
-bool CameraBridge::getExposureTime(double& us, double& minUs, double& maxUs) {
-    return camera_ && camera_->getExposureTime(us, minUs, maxUs);
+bool CameraBridge::getExposureTime(int cameraIndex, double& us, double& minUs, double& maxUs) {
+    CameraSlot* s = slotAt(cameraIndex);
+    return s && s->camera->getExposureTime(us, minUs, maxUs);
 }
 
-bool CameraBridge::setGain(double dB) {
-    return camera_ && camera_->setGain(dB);
+bool CameraBridge::setGain(int cameraIndex, double dB) {
+    CameraSlot* s = slotAt(cameraIndex);
+    return s && s->camera->setGain(dB);
 }
 
-bool CameraBridge::getGain(double& dB, double& minDb, double& maxDb) {
-    return camera_ && camera_->getGain(dB, minDb, maxDb);
+bool CameraBridge::getGain(int cameraIndex, double& dB, double& minDb, double& maxDb) {
+    CameraSlot* s = slotAt(cameraIndex);
+    return s && s->camera->getGain(dB, minDb, maxDb);
 }
 
-// ------------------------------------------------------------------ //
-//  Statistics                                                          //
-// ------------------------------------------------------------------ //
+// ======================================================================== //
+//  Per-camera statistics / state query                                       //
+// ======================================================================== //
 
-FrameQueueStats CameraBridge::queueStats() const {
-    return previewQueue_->stats();
+FrameQueueStats CameraBridge::queueStats(int cameraIndex) const {
+    const CameraSlot* s = slotAt(cameraIndex);
+    if (! s)
+        return {};
+    return s->previewQueue->stats();
 }
 
-GrabMode CameraBridge::currentMode() const {
-    if (! camera_)
+GrabMode CameraBridge::currentMode(int cameraIndex) const {
+    const CameraSlot* s = slotAt(cameraIndex);
+    if (! s)
         return GrabMode::StreamCallback;
-    return camera_->currentMode();
+    return s->camera->currentMode();
 }
 
-// ------------------------------------------------------------------ //
-//  Private: frame callback (SDK callback thread)                       //
-// ------------------------------------------------------------------ //
+// ======================================================================== //
+//  Private helpers                                                           //
+// ======================================================================== //
 
-void CameraBridge::onFrameArrived(const ImageFrame& frame) {
-    // Push into the preview queue (shallow copy – O(1)).
-    // The queue has capacity 1 with DropAll policy, so it always holds the
-    // most recent frame.  We are the sole consumer, so pop() immediately
-    // after push() to keep totalPopped in sync with totalPushed.
-    previewQueue_->push(frame);
-    auto popped = previewQueue_->pop(0); // non-blocking; should always succeed
+CameraBridge::CameraSlot* CameraBridge::slotAt(int cameraIndex) {
+    std::lock_guard<std::mutex> lk(slotsMutex_);
+    if (cameraIndex < 0 || cameraIndex >= static_cast<int>(slots_.size()))
+        return nullptr;
+    return slots_[cameraIndex].get(); // nullptr if slot was closed
+}
 
-    // Use the popped frame for display (falls back to the original if the
-    // pop somehow raced and returned nullopt, which cannot happen here but
-    // is handled defensively).
+const CameraBridge::CameraSlot* CameraBridge::slotAt(int cameraIndex) const {
+    std::lock_guard<std::mutex> lk(slotsMutex_);
+    if (cameraIndex < 0 || cameraIndex >= static_cast<int>(slots_.size()))
+        return nullptr;
+    return slots_[cameraIndex].get();
+}
+
+// ======================================================================== //
+//  Frame callback (SDK callback thread)                                      //
+// ======================================================================== //
+
+void CameraBridge::onFrameArrived(int cameraIndex, const ImageFrame& frame) {
+    // slotAt() acquires slotsMutex_ – avoid holding it across the push/pop
+    // by reading the queue pointer first.
+    FrameQueue* queue = nullptr;
+    {
+        std::lock_guard<std::mutex> lk(slotsMutex_);
+        if (cameraIndex < 0 || cameraIndex >= static_cast<int>(slots_.size()) ||
+            ! slots_[cameraIndex])
+            return;
+        queue = slots_[cameraIndex]->previewQueue.get();
+    }
+
+    // Push into the per-camera preview queue (shallow copy – O(1)).
+    // DropAll policy: if the queue already holds a frame, discard it and keep
+    // only the newest one.  Pop immediately so totalPopped stays in sync.
+    queue->push(frame);
+    auto popped = queue->pop(0); // non-blocking; should always succeed
+
     cv::Mat img = popped ? popped->image : frame.image; // shallow copy
     quint64 fid = frame.frameId;
     quint64 ts = frame.timestampNs;
 
     // Marshal to the Qt main thread via QueuedConnection.
+    // All cameras share the same main-thread event loop; Qt serialises the
+    // events automatically – no additional locking needed.
     QMetaObject::invokeMethod(
         this,
-        [this, img, fid, ts]() {
-            emit frameReady(img, fid, ts);
-
-            auto s = previewQueue_->stats();
-            emit queueStatsUpdated(s.totalPushed, s.totalPopped, s.dropCount);
+        [this, cameraIndex, img, fid, ts, queue]() {
+            emit frameReady(cameraIndex, img, fid, ts);
+            auto st = queue->stats();
+            emit queueStatsUpdated(cameraIndex, st.totalPushed, st.totalPopped, st.dropCount);
         },
         Qt::QueuedConnection);
 }
 
-// ------------------------------------------------------------------ //
-//  Private: status callback (reconnect / SDK thread)                   //
-// ------------------------------------------------------------------ //
+// ======================================================================== //
+//  Status callback (reconnect / SDK thread)                                  //
+// ======================================================================== //
 
-void CameraBridge::onStatusEvent(const StatusEvent& event) {
+void CameraBridge::onStatusEvent(int cameraIndex, const StatusEvent& event) {
     QString text;
     switch (event.status) {
         case CameraStatus::Connected:
@@ -255,5 +337,6 @@ void CameraBridge::onStatusEvent(const StatusEvent& event) {
     }
 
     QMetaObject::invokeMethod(
-        this, [this, text]() { emit connectionStateChanged(text); }, Qt::QueuedConnection);
+        this, [this, cameraIndex, text]() { emit connectionStateChanged(cameraIndex, text); },
+        Qt::QueuedConnection);
 }

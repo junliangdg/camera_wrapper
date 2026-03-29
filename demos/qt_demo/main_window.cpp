@@ -3,17 +3,82 @@
 #include "ui_main_window.h"
 
 #include <QDateTime>
+#include <QGridLayout>
 #include <QImage>
+#include <QListWidgetItem>
 #include <QMessageBox>
 #include <QPixmap>
 #include <QStatusBar>
 #include <QTimer>
+#include <QVBoxLayout>
 #include <opencv2/imgproc.hpp>
 
 using namespace camera_wrapper;
 
 // ======================================================================== //
-//  Constructor / Destructor                                                  //
+//  CameraPanel                                                               //
+// ======================================================================== //
+
+CameraPanel::CameraPanel(int cameraIndex, const QString& title, QWidget* parent)
+    : QFrame(parent)
+    , cameraIndex_(cameraIndex)
+    , imageLabel_(new QLabel(this))
+    , statusLabel_(new QLabel(this)) {
+    setFrameShape(QFrame::StyledPanel);
+    setFrameShadow(QFrame::Raised);
+    setMinimumSize(320, 260);
+
+    auto* vl = new QVBoxLayout(this);
+    vl->setContentsMargins(4, 4, 4, 4);
+    vl->setSpacing(2);
+
+    auto* titleLabel = new QLabel(title, this);
+    titleLabel->setAlignment(Qt::AlignCenter);
+    QFont f = titleLabel->font();
+    f.setBold(true);
+    titleLabel->setFont(f);
+    vl->addWidget(titleLabel);
+
+    imageLabel_->setAlignment(Qt::AlignCenter);
+    imageLabel_->setText(QStringLiteral("No image"));
+    imageLabel_->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+    imageLabel_->setMinimumSize(300, 200);
+    vl->addWidget(imageLabel_, 1);
+
+    statusLabel_->setAlignment(Qt::AlignCenter);
+    statusLabel_->setText(QStringLiteral("Connecting..."));
+    vl->addWidget(statusLabel_);
+}
+
+void CameraPanel::displayFrame(const cv::Mat& mat) {
+    if (mat.empty())
+        return;
+
+    QImage qimg;
+    if (mat.type() == CV_8UC3) {
+        cv::Mat rgb;
+        cv::cvtColor(mat, rgb, cv::COLOR_BGR2RGB);
+        qimg =
+            QImage(rgb.data, rgb.cols, rgb.rows, static_cast<int>(rgb.step), QImage::Format_RGB888)
+                .copy();
+    } else if (mat.type() == CV_8UC1) {
+        qimg = QImage(mat.data, mat.cols, mat.rows, static_cast<int>(mat.step),
+                      QImage::Format_Grayscale8)
+                   .copy();
+    } else {
+        return;
+    }
+
+    imageLabel_->setPixmap(QPixmap::fromImage(qimg).scaled(imageLabel_->size(), Qt::KeepAspectRatio,
+                                                           Qt::SmoothTransformation));
+}
+
+void CameraPanel::setStatus(const QString& text) {
+    statusLabel_->setText(text);
+}
+
+// ======================================================================== //
+//  MainWindow – Constructor / Destructor                                     //
 // ======================================================================== //
 
 MainWindow::MainWindow(QWidget* parent)
@@ -24,7 +89,7 @@ MainWindow::MainWindow(QWidget* parent)
     ui_->setupUi(this);
 
     // ---------------------------------------------------------------- //
-    //  Connect bridge signals                                            //
+    //  Connect bridge signals (multi-camera: all carry cameraIndex)     //
     // ---------------------------------------------------------------- //
     connect(bridge_, &CameraBridge::frameReady, this, &MainWindow::onFrameReady);
     connect(bridge_, &CameraBridge::connectionStateChanged, this,
@@ -37,6 +102,11 @@ MainWindow::MainWindow(QWidget* parent)
     connect(ui_->refreshButton, &QPushButton::clicked, this, &MainWindow::onRefreshClicked);
     connect(ui_->connectButton, &QPushButton::clicked, this, &MainWindow::onConnectClicked);
     connect(ui_->disconnectButton, &QPushButton::clicked, this, &MainWindow::onDisconnectClicked);
+    connect(ui_->disconnectAllButton, &QPushButton::clicked, this,
+            &MainWindow::onDisconnectAllClicked);
+
+    connect(ui_->cameraListWidget, &QListWidget::currentRowChanged, this,
+            [this](int) { onCameraSelectionChanged(); });
 
     connect(ui_->modeComboBox, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
             &MainWindow::onModeChanged);
@@ -56,20 +126,19 @@ MainWindow::MainWindow(QWidget* parent)
     //  Status bar timer                                                  //
     // ---------------------------------------------------------------- //
     connect(statusTimer_, &QTimer::timeout, this, &MainWindow::onStatusTimer);
-    statusTimer_->start(500); // update every 500 ms
+    statusTimer_->start(500);
 
     // ---------------------------------------------------------------- //
     //  Initial state                                                     //
     // ---------------------------------------------------------------- //
     setControlsEnabled(false);
-    statusBar()->showMessage("Ready – click Refresh to enumerate cameras");
+    statusBar()->showMessage(QStringLiteral("Ready – click Refresh to enumerate cameras"));
 
-    // Enumerate on startup.
     onRefreshClicked();
 }
 
 MainWindow::~MainWindow() {
-    bridge_->closeCamera();
+    bridge_->closeAllCameras();
     delete ui_;
 }
 
@@ -84,35 +153,120 @@ void MainWindow::onRefreshClicked() {
         ui_->deviceComboBox->addItem(n);
 
     if (names.isEmpty())
-        statusBar()->showMessage("No cameras found");
+        statusBar()->showMessage(QStringLiteral("No cameras found"));
     else
-        statusBar()->showMessage(QString("Found %1 camera(s)").arg(names.size()));
+        statusBar()->showMessage(
+            QStringLiteral("Found %1 camera(s) – select one and click Connect").arg(names.size()));
 }
 
 void MainWindow::onConnectClicked() {
-    int idx = ui_->deviceComboBox->currentIndex();
-    if (idx < 0) {
-        QMessageBox::warning(this, "No camera selected", "Please select a camera from the list.");
+    int deviceIdx = ui_->deviceComboBox->currentIndex();
+    if (deviceIdx < 0) {
+        QMessageBox::warning(this, QStringLiteral("No camera selected"),
+                             QStringLiteral("Please select a camera from the list."));
         return;
     }
 
-    statusBar()->showMessage("Connecting…");
-    if (! bridge_->openCamera(idx)) {
-        QMessageBox::critical(this, "Connection failed", "Failed to open the selected camera.");
-        statusBar()->showMessage("Connection failed");
+    statusBar()->showMessage(QStringLiteral("Connecting…"));
+    int camIdx = bridge_->openCamera(deviceIdx);
+    if (camIdx < 0) {
+        QMessageBox::critical(this, QStringLiteral("Connection failed"),
+                              QStringLiteral("Failed to open the selected camera."));
+        statusBar()->showMessage(QStringLiteral("Connection failed"));
         return;
     }
 
-    setControlsEnabled(true);
+    // Add a row to the open-cameras list.
+    QString name = ui_->deviceComboBox->currentText();
+    auto* item = new QListWidgetItem(QStringLiteral("[%1] %2").arg(camIdx).arg(name));
+    item->setData(Qt::UserRole, camIdx);
+    ui_->cameraListWidget->addItem(item);
+    ui_->cameraListWidget->setCurrentItem(item);
+
+    // Add preview panel.
+    addCameraPanel(camIdx, QStringLiteral("Cam %1: %2").arg(camIdx).arg(name));
+
+    // Initialise per-camera stats entry.
+    stats_[camIdx] = CameraStats{};
+
+    // Enable disconnect-all as soon as at least one camera is open.
+    ui_->disconnectAllButton->setEnabled(true);
+
     updateParameterPanel();
-    statusBar()->showMessage("Connected");
+    statusBar()->showMessage(QStringLiteral("Camera %1 connected (%2 open)")
+                                 .arg(camIdx)
+                                 .arg(bridge_->openCameraCount()));
 }
 
 void MainWindow::onDisconnectClicked() {
-    bridge_->closeCamera();
+    int camIdx = selectedCameraIndex();
+    if (camIdx < 0)
+        return;
+
+    bridge_->closeCamera(camIdx);
+
+    // Remove from list widget.
+    for (int r = 0; r < ui_->cameraListWidget->count(); ++r) {
+        if (ui_->cameraListWidget->item(r)->data(Qt::UserRole).toInt() == camIdx) {
+            delete ui_->cameraListWidget->takeItem(r);
+            break;
+        }
+    }
+
+    removeCameraPanel(camIdx);
+    stats_.remove(camIdx);
+
+    if (bridge_->openCameraCount() == 0) {
+        ui_->disconnectAllButton->setEnabled(false);
+        setControlsEnabled(false);
+    }
+
+    statusBar()->showMessage(QStringLiteral("Camera %1 disconnected (%2 still open)")
+                                 .arg(camIdx)
+                                 .arg(bridge_->openCameraCount()));
+}
+
+void MainWindow::onDisconnectAllClicked() {
+    bridge_->closeAllCameras();
+    ui_->cameraListWidget->clear();
+
+    for (auto* panel : panels_)
+        panel->deleteLater();
+    panels_.clear();
+    stats_.clear();
+
+    ui_->disconnectAllButton->setEnabled(false);
     setControlsEnabled(false);
-    ui_->imageLabel->setText("No image");
-    statusBar()->showMessage("Disconnected");
+    statusBar()->showMessage(QStringLiteral("All cameras disconnected"));
+}
+
+// ======================================================================== //
+//  Camera list selection                                                     //
+// ======================================================================== //
+
+void MainWindow::onCameraSelectionChanged() {
+    int camIdx = selectedCameraIndex();
+    setControlsEnabled(camIdx >= 0);
+    if (camIdx < 0)
+        return;
+
+    updateParameterPanel();
+
+    // Reflect the current mode of the selected camera.
+    GrabMode mode = bridge_->currentMode(camIdx);
+    updatingControls_ = true;
+    switch (mode) {
+        case GrabMode::StreamCallback:
+            ui_->modeComboBox->setCurrentIndex(0);
+            break;
+        case GrabMode::TriggerCallback:
+            ui_->modeComboBox->setCurrentIndex(1);
+            break;
+        case GrabMode::SnapSync:
+            ui_->modeComboBox->setCurrentIndex(2);
+            break;
+    }
+    updatingControls_ = false;
 }
 
 // ======================================================================== //
@@ -120,7 +274,11 @@ void MainWindow::onDisconnectClicked() {
 // ======================================================================== //
 
 void MainWindow::onModeChanged(int index) {
-    if (! bridge_->isCameraOpen())
+    if (updatingControls_)
+        return;
+
+    int camIdx = selectedCameraIndex();
+    if (camIdx < 0)
         return;
 
     GrabMode mode;
@@ -150,19 +308,19 @@ void MainWindow::onModeChanged(int index) {
             break;
     }
 
-    bridge_->switchMode(mode, src);
+    bridge_->switchMode(camIdx, mode, src);
 
-    // Soft trigger button is only useful in trigger / snap modes.
     bool triggerMode = (mode == GrabMode::TriggerCallback || mode == GrabMode::SnapSync);
     ui_->softTriggerButton->setEnabled(triggerMode && src == TriggerSource::Software);
 }
 
 void MainWindow::onSoftTriggerClicked() {
-    bridge_->sendSoftTrigger();
+    int camIdx = selectedCameraIndex();
+    if (camIdx >= 0)
+        bridge_->sendSoftTrigger(camIdx);
 }
 
 void MainWindow::onTriggerSourceChanged(int /*index*/) {
-    // Re-apply mode with new trigger source.
     onModeChanged(ui_->modeComboBox->currentIndex());
 }
 
@@ -176,7 +334,9 @@ void MainWindow::onExposureSliderChanged(int value) {
     updatingControls_ = true;
     ui_->exposureSpinBox->setValue(static_cast<double>(value));
     updatingControls_ = false;
-    bridge_->setExposureTime(static_cast<double>(value));
+    int camIdx = selectedCameraIndex();
+    if (camIdx >= 0)
+        bridge_->setExposureTime(camIdx, static_cast<double>(value));
 }
 
 void MainWindow::onExposureSpinChanged(double value) {
@@ -185,7 +345,9 @@ void MainWindow::onExposureSpinChanged(double value) {
     updatingControls_ = true;
     ui_->exposureSlider->setValue(static_cast<int>(value));
     updatingControls_ = false;
-    bridge_->setExposureTime(value);
+    int camIdx = selectedCameraIndex();
+    if (camIdx >= 0)
+        bridge_->setExposureTime(camIdx, value);
 }
 
 void MainWindow::onGainSliderChanged(int value) {
@@ -195,7 +357,9 @@ void MainWindow::onGainSliderChanged(int value) {
     double dB = value / 10.0;
     ui_->gainSpinBox->setValue(dB);
     updatingControls_ = false;
-    bridge_->setGain(dB);
+    int camIdx = selectedCameraIndex();
+    if (camIdx >= 0)
+        bridge_->setGain(camIdx, dB);
 }
 
 void MainWindow::onGainSpinChanged(double value) {
@@ -204,61 +368,90 @@ void MainWindow::onGainSpinChanged(double value) {
     updatingControls_ = true;
     ui_->gainSlider->setValue(static_cast<int>(value * 10));
     updatingControls_ = false;
-    bridge_->setGain(value);
+    int camIdx = selectedCameraIndex();
+    if (camIdx >= 0)
+        bridge_->setGain(camIdx, value);
 }
 
 // ======================================================================== //
 //  Bridge signal handlers                                                    //
 // ======================================================================== //
 
-void MainWindow::onFrameReady(cv::Mat image, quint64 frameId, quint64 /*timestampNs*/) {
-    ++frameCount_;
-    lastFrameId_ = frameId;
-    lastFrameTimeMs_ = QDateTime::currentMSecsSinceEpoch();
+void MainWindow::onFrameReady(int cameraIndex, cv::Mat image, quint64 frameId,
+                              quint64 /*timestampNs*/) {
+    auto& st = stats_[cameraIndex];
+    ++st.frameCount;
+    st.lastFrameId = frameId;
 
-    displayFrame(image);
+    if (panels_.contains(cameraIndex))
+        panels_[cameraIndex]->displayFrame(image);
 }
 
-void MainWindow::onConnectionStateChanged(QString statusText) {
-    statusBar()->showMessage(statusText);
+void MainWindow::onConnectionStateChanged(int cameraIndex, QString statusText) {
+    if (panels_.contains(cameraIndex))
+        panels_[cameraIndex]->setStatus(statusText);
 
-    bool connected = (statusText == "Connected" || statusText == "Reconnected");
-    setControlsEnabled(connected);
-
-    if (statusText.startsWith("Reconnect")) {
-        // Show reconnecting state in the image area.
-        ui_->imageLabel->setText(statusText);
+    // Update list item text to reflect state.
+    for (int r = 0; r < ui_->cameraListWidget->count(); ++r) {
+        auto* item = ui_->cameraListWidget->item(r);
+        if (item->data(Qt::UserRole).toInt() == cameraIndex) {
+            QString base = item->text().section(QStringLiteral(" ["), 0, 0);
+            item->setText(QStringLiteral("%1 [%2]").arg(base).arg(statusText));
+            break;
+        }
     }
+
+    statusBar()->showMessage(QStringLiteral("Cam %1: %2").arg(cameraIndex).arg(statusText));
 }
 
-void MainWindow::onQueueStatsUpdated(quint64 pushed, quint64 popped, quint64 dropped) {
-    // Update status bar with queue info.
-    QString msg = QString("Queue: pushed=%1 popped=%2 dropped=%3  |  FPS: %4  |  Frame#%5")
-                      .arg(pushed)
-                      .arg(popped)
-                      .arg(dropped)
-                      .arg(displayedFps_, 0, 'f', 1)
-                      .arg(lastFrameId_);
-    statusBar()->showMessage(msg);
+void MainWindow::onQueueStatsUpdated(int cameraIndex, quint64 pushed, quint64 popped,
+                                     quint64 dropped) {
+    // Only update the status bar when this camera is the selected one.
+    if (cameraIndex != selectedCameraIndex())
+        return;
+
+    double fps = stats_.contains(cameraIndex) ? stats_[cameraIndex].fps : 0.0;
+    quint64 fid = stats_.contains(cameraIndex) ? stats_[cameraIndex].lastFrameId : 0;
+
+    statusBar()->showMessage(
+        QStringLiteral("Cam %1 | Queue: pushed=%2 popped=%3 dropped=%4 | FPS: %5 | Frame#%6")
+            .arg(cameraIndex)
+            .arg(pushed)
+            .arg(popped)
+            .arg(dropped)
+            .arg(fps, 0, 'f', 1)
+            .arg(fid));
 }
 
 void MainWindow::onStatusTimer() {
-    // Compute approximate display FPS from frame counter.
-    static quint64 lastCount = 0;
-    quint64 current = frameCount_;
-    displayedFps_ = (current - lastCount) * 2.0; // timer fires every 500 ms
-    lastCount = current;
+    // Compute per-camera FPS (timer fires every 500 ms → multiply by 2).
+    for (auto it = stats_.begin(); it != stats_.end(); ++it) {
+        auto& st = it.value();
+        st.fps = static_cast<double>(st.frameCount - st.lastCount) * 2.0;
+        st.lastCount = st.frameCount;
+    }
 }
 
 // ======================================================================== //
 //  Private helpers                                                           //
 // ======================================================================== //
 
+int MainWindow::selectedCameraIndex() const {
+    auto* item = ui_->cameraListWidget->currentItem();
+    if (! item)
+        return -1;
+    return item->data(Qt::UserRole).toInt();
+}
+
 void MainWindow::updateParameterPanel() {
+    int camIdx = selectedCameraIndex();
+    if (camIdx < 0)
+        return;
+
     updatingControls_ = true;
 
     double us = 0, minUs = 0, maxUs = 0;
-    if (bridge_->getExposureTime(us, minUs, maxUs)) {
+    if (bridge_->getExposureTime(camIdx, us, minUs, maxUs)) {
         ui_->exposureSpinBox->setMinimum(minUs);
         ui_->exposureSpinBox->setMaximum(maxUs);
         ui_->exposureSpinBox->setValue(us);
@@ -268,7 +461,7 @@ void MainWindow::updateParameterPanel() {
     }
 
     double dB = 0, minDb = 0, maxDb = 0;
-    if (bridge_->getGain(dB, minDb, maxDb)) {
+    if (bridge_->getGain(camIdx, dB, minDb, maxDb)) {
         ui_->gainSpinBox->setMinimum(minDb);
         ui_->gainSpinBox->setMaximum(maxDb);
         ui_->gainSpinBox->setValue(dB);
@@ -280,44 +473,52 @@ void MainWindow::updateParameterPanel() {
     updatingControls_ = false;
 }
 
-void MainWindow::setControlsEnabled(bool cameraOpen) {
-    ui_->connectButton->setEnabled(! cameraOpen);
-    ui_->disconnectButton->setEnabled(cameraOpen);
-    ui_->deviceComboBox->setEnabled(! cameraOpen);
-    ui_->refreshButton->setEnabled(! cameraOpen);
-    ui_->modeGroup->setEnabled(cameraOpen);
-    ui_->paramGroup->setEnabled(cameraOpen);
+void MainWindow::setControlsEnabled(bool cameraSelected) {
+    ui_->disconnectButton->setEnabled(cameraSelected);
+    ui_->modeGroup->setEnabled(cameraSelected);
+    ui_->paramGroup->setEnabled(cameraSelected);
 
-    // Soft trigger only makes sense in trigger/snap mode with software source.
-    bool triggerMode = cameraOpen && (ui_->modeComboBox->currentIndex() == 1 ||
-                                      ui_->modeComboBox->currentIndex() == 2);
+    bool triggerMode = cameraSelected && (ui_->modeComboBox->currentIndex() == 1 ||
+                                          ui_->modeComboBox->currentIndex() == 2);
     ui_->softTriggerButton->setEnabled(triggerMode &&
                                        ui_->triggerSourceComboBox->currentIndex() == 0);
 }
 
-void MainWindow::displayFrame(const cv::Mat& mat) {
-    if (mat.empty())
+void MainWindow::addCameraPanel(int cameraIndex, const QString& name) {
+    auto* panel = new CameraPanel(cameraIndex, name, ui_->previewContainer);
+    panels_[cameraIndex] = panel;
+    reflowGrid();
+}
+
+void MainWindow::removeCameraPanel(int cameraIndex) {
+    if (! panels_.contains(cameraIndex))
         return;
 
-    // Convert BGR/Mono to QImage.
-    QImage qimg;
-    if (mat.type() == CV_8UC3) {
-        cv::Mat rgb;
-        cv::cvtColor(mat, rgb, cv::COLOR_BGR2RGB);
-        qimg =
-            QImage(rgb.data, rgb.cols, rgb.rows, static_cast<int>(rgb.step), QImage::Format_RGB888)
-                .copy();
-    } else if (mat.type() == CV_8UC1) {
-        qimg = QImage(mat.data, mat.cols, mat.rows, static_cast<int>(mat.step),
-                      QImage::Format_Grayscale8)
-                   .copy();
-    } else {
-        return; // unsupported format for display
+    auto* layout = qobject_cast<QGridLayout*>(ui_->previewContainer->layout());
+    if (layout)
+        layout->removeWidget(panels_[cameraIndex]);
+
+    panels_[cameraIndex]->deleteLater();
+    panels_.remove(cameraIndex);
+    reflowGrid();
+}
+
+void MainWindow::reflowGrid() {
+    auto* layout = qobject_cast<QGridLayout*>(ui_->previewContainer->layout());
+    if (! layout)
+        return;
+
+    // Remove all layout items without deleting the widgets.
+    while (layout->count() > 0) {
+        auto* item = layout->takeAt(0);
+        delete item;
     }
 
-    // Scale to fit the label while keeping aspect ratio.
-    QPixmap pix = QPixmap::fromImage(qimg).scaled(ui_->imageLabel->size(), Qt::KeepAspectRatio,
-                                                  Qt::SmoothTransformation);
-
-    ui_->imageLabel->setPixmap(pix);
+    // Re-add all panels in a 2-column grid.
+    const int cols = 2;
+    int idx = 0;
+    for (auto* panel : panels_) {
+        layout->addWidget(panel, idx / cols, idx % cols);
+        ++idx;
+    }
 }

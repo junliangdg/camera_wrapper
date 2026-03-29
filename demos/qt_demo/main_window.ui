@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="UTF-8"?>
+﻿<?xml version="1.0" encoding="UTF-8"?>
 <ui version="4.0">
  <class>MainWindow</class>
  <widget class="QMainWindow" name="MainWindow">
@@ -6,29 +6,33 @@
    <rect>
     <x>0</x>
     <y>0</y>
-    <width>1100</width>
-    <height>750</height>
+    <width>1280</width>
+    <height>800</height>
    </rect>
   </property>
   <property name="windowTitle">
-   <string>CameraWrapper Qt Demo</string>
+   <string>CameraWrapper Qt Demo - Multi-Camera</string>
   </property>
   <widget class="QWidget" name="centralwidget">
-   <layout class="QHBoxLayout" name="horizontalLayout">
+   <layout class="QHBoxLayout" name="horizontalLayout" stretch="1,0">
     <item>
-     <widget class="QLabel" name="imageLabel">
+     <widget class="QScrollArea" name="previewScrollArea">
       <property name="sizePolicy">
        <sizepolicy hsizetype="Expanding" vsizetype="Expanding">
         <horstretch>1</horstretch>
         <verstretch>0</verstretch>
        </sizepolicy>
       </property>
-      <property name="text">
-       <string>No image</string>
+      <property name="widgetResizable">
+       <bool>true</bool>
       </property>
-      <property name="alignment">
-       <set>Qt::AlignmentFlag::AlignCenter</set>
-      </property>
+      <widget class="QWidget" name="previewContainer">
+       <layout class="QGridLayout" name="previewGrid">
+        <property name="spacing">
+         <number>4</number>
+        </property>
+       </layout>
+      </widget>
      </widget>
     </item>
     <item>
@@ -36,7 +40,7 @@
       <item>
        <widget class="QGroupBox" name="deviceGroup">
         <property name="title">
-         <string>Device</string>
+         <string>Devices</string>
         </property>
         <layout class="QVBoxLayout">
          <item>
@@ -69,6 +73,32 @@
             </widget>
            </item>
           </layout>
+         </item>
+         <item>
+          <widget class="QPushButton" name="disconnectAllButton">
+           <property name="enabled">
+            <bool>false</bool>
+           </property>
+           <property name="text">
+            <string>Disconnect All</string>
+           </property>
+          </widget>
+         </item>
+        </layout>
+       </widget>
+      </item>
+      <item>
+       <widget class="QGroupBox" name="openCamerasGroup">
+        <property name="title">
+         <string>Open Cameras</string>
+        </property>
+        <layout class="QVBoxLayout">
+         <item>
+          <widget class="QListWidget" name="cameraListWidget">
+           <property name="minimumHeight">
+            <number>80</number>
+           </property>
+          </widget>
          </item>
         </layout>
        </widget>
