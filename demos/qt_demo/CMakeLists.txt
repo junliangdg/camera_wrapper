@@ -10,8 +10,8 @@ set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 
-if(NOT TARGET CameraWrapper)
-    find_package(CameraWrapper REQUIRED)
+if(NOT TARGET camera_wrapper)
+	find_package(camera_wrapper REQUIRED)
 endif()
 
 find_package(Qt6 REQUIRED COMPONENTS Core Widgets Concurrent)
@@ -34,10 +34,10 @@ target_include_directories(qt_demo PRIVATE
 )
 
 target_link_libraries(qt_demo PRIVATE
-    CameraWrapper
-    Qt6::Core
-    Qt6::Widgets
-    ${OpenCV_LIBS}
+	camera_wrapper::camera_wrapper
+	Qt6::Core
+	Qt6::Widgets
+	${OpenCV_LIBS}
 )
 
 if(MSVC)
@@ -48,8 +48,8 @@ qt_finalize_executable(qt_demo)
 
 if(WIN32)
     add_custom_command(TARGET qt_demo POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-        $<TARGET_FILE:CameraWrapper>
-        $<TARGET_FILE_DIR:qt_demo>
-        COMMENT "Copying CameraWrapper.dll")
+    	COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    	$<TARGET_FILE:camera_wrapper>
+    	$<TARGET_FILE_DIR:qt_demo>
+    	COMMENT "Copying camera_wrapper.dll")
 endif()

@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.17)
 
-project(CameraWrapper VERSION 1.0.0 LANGUAGES CXX)
+project(camera_wrapper VERSION 1.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -37,7 +37,7 @@ find_library(HIKCAMERA_LIBRARY
 )
 
 # ── Library target ───────────────────────────────────────────────────
-add_library(CameraWrapper SHARED
+add_library(camera_wrapper SHARED
     include/camera_wrapper/export.h
     include/camera_wrapper/device_info.h
     include/camera_wrapper/frame_callback_manager.h
@@ -60,7 +60,7 @@ add_library(CameraWrapper SHARED
     src/hik_enumerator.cpp
 )
 
-target_include_directories(CameraWrapper
+target_include_directories(camera_wrapper
     PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
@@ -70,36 +70,39 @@ target_include_directories(CameraWrapper
     "${HIKCAM_SDK_DIR}/Includes"
 )
 
-target_compile_definitions(CameraWrapper PRIVATE CAMERA_WRAPPER_BUILDING_DLL)
+target_compile_definitions(camera_wrapper PRIVATE CAMERA_WRAPPER_BUILDING_DLL)
 
 # Suppress MSVC C4819: source file contains characters that cannot be
 # represented in the current code page.  All source files are UTF-8.
 if(MSVC)
-    target_compile_options(CameraWrapper PRIVATE /utf-8)
+    target_compile_options(camera_wrapper PRIVATE /utf-8)
 endif()
 
-target_link_libraries(CameraWrapper
+target_link_libraries(camera_wrapper
     PUBLIC ${OpenCV_LIBS}
     PRIVATE ${HIKCAMERA_LIBRARY}
 )
 
+# Create an ALIAS target for namespaced access
+add_library(camera_wrapper::camera_wrapper ALIAS camera_wrapper)
+
 # Linux: export only symbols marked CAMERA_WRAPPER_API.
 if(NOT WIN32)
-    set_target_properties(CameraWrapper PROPERTIES
+    set_target_properties(camera_wrapper PROPERTIES
         CXX_VISIBILITY_PRESET hidden
         VISIBILITY_INLINES_HIDDEN ON)
 endif()
 
 # ── Install rules ────────────────────────────────────────────────────
-install(TARGETS CameraWrapper
-    EXPORT CameraWrapperTargets
+install(TARGETS camera_wrapper
+	EXPORT camera_wrapper_targets
     RUNTIME DESTINATION bin
     LIBRARY DESTINATION lib
     ARCHIVE DESTINATION lib)
 
 install(DIRECTORY include/camera_wrapper DESTINATION include)
 
-install(EXPORT CameraWrapperTargets
-    FILE CameraWrapperTargets.cmake
-    NAMESPACE CameraWrapper::
-    DESTINATION lib/cmake/CameraWrapper)
+install(EXPORT camera_wrapper_targets
+	FILE camera_wrapper_targets.cmake
+	NAMESPACE camera_wrapper::
+	DESTINATION lib/cmake/camera_wrapper)

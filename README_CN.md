@@ -144,7 +144,7 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(camera_wrapper)
 
 # 链接到你的目标
-target_link_libraries(your_target PRIVATE CameraWrapper)
+target_link_libraries(your_target PRIVATE camera_wrapper::camera_wrapper)
 ```
 
 ### 使用 CMake add_subdirectory
@@ -153,7 +153,7 @@ target_link_libraries(your_target PRIVATE CameraWrapper)
 
 ```cmake
 add_subdirectory(path/to/camera_wrapper)
-target_link_libraries(your_target PRIVATE CameraWrapper)
+target_link_libraries(your_target PRIVATE camera_wrapper::camera_wrapper)
 ```
 
 ### 使用已安装的包
@@ -162,7 +162,7 @@ target_link_libraries(your_target PRIVATE CameraWrapper)
 
 ```cmake
 find_package(CameraWrapper REQUIRED)
-target_link_libraries(your_target PRIVATE CameraWrapper::CameraWrapper)
+target_link_libraries(your_target PRIVATE camera_wrapper::camera_wrapper)
 ```
 
 ### 包含头文件

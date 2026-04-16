@@ -144,7 +144,7 @@ FetchContent_Declare(
 FetchContent_MakeAvailable(camera_wrapper)
 
 # Link to your target
-target_link_libraries(your_target PRIVATE CameraWrapper)
+target_link_libraries(your_target PRIVATE camera_wrapper::camera_wrapper)
 ```
 
 ### Using CMake add_subdirectory
@@ -153,7 +153,7 @@ If you have the camera_wrapper source in your project:
 
 ```cmake
 add_subdirectory(path/to/camera_wrapper)
-target_link_libraries(your_target PRIVATE CameraWrapper)
+target_link_libraries(your_target PRIVATE camera_wrapper::camera_wrapper)
 ```
 
 ### Using Installed Package
@@ -161,8 +161,8 @@ target_link_libraries(your_target PRIVATE CameraWrapper)
 After installing the library:
 
 ```cmake
-find_package(CameraWrapper REQUIRED)
-target_link_libraries(your_target PRIVATE CameraWrapper::CameraWrapper)
+find_package(camera_wrapper REQUIRED)
+target_link_libraries(your_target PRIVATE camera_wrapper::camera_wrapper)
 ```
 
 ### Include Headers
