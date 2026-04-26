@@ -44,6 +44,14 @@ struct GrabConfig {
     /// Number of retry attempts for lost-packet frames in SnapSync mode.
     /// Used by grabOne() → snapSync() internally.
     int snapRetryCount{3};
+
+    friend bool operator==(const GrabConfig& a, const GrabConfig& b) {
+        return a.mode == b.mode && a.triggerSource == b.triggerSource &&
+               a.snapTimeoutMs == b.snapTimeoutMs && a.snapRetryCount == b.snapRetryCount;
+    }
+    friend bool operator!=(const GrabConfig& a, const GrabConfig& b) {
+        return ! (a == b);
+    }
 };
 
 } // namespace camera_wrapper

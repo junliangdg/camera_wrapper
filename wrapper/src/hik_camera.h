@@ -39,13 +39,16 @@ namespace camera_wrapper {
 /// Thread-safety
 /// -------------
 /// Locking hierarchy (never acquire in reverse order):
-///   1. stateMutex_      – protects grabbing state and mode switching
-///   2. desiredMutex_    – protects the desired-state snapshot
-///   3. frameCbManager_  – internal lock inside FrameCallbackManager
-///   4. statusCbManager_ – internal lock inside StatusCallbackManager
+///   0. switching_      – atomic CAS guard for switchMode() (non-blocking reject)
+///   1. stateMutex_     – protects grabbing state and mode switching
+///   2. desiredMutex_   – protects the desired-state snapshot
+///   3. frameCbManager_ – internal lock inside FrameCallbackManager
+///   4. statusCbManager_– internal lock inside StatusCallbackManager
 ///
-/// SDK functions are NEVER called while holding stateMutex_ or desiredMutex_.
-/// The pattern is: lock → read/write state → unlock → call SDK → lock → update.
+/// handle_ is std::atomic<void*>; all reads use .load() into a local variable
+/// before calling SDK functions.  This ensures no torn reads if the reconnect
+/// thread resets the handle.  SDK functions are NEVER called while holding
+/// stateMutex_ or desiredMutex_.
 class HikCamera : public Camera {
   public:
     explicit HikCamera(const DeviceInfo& info);
@@ -164,7 +167,7 @@ class HikCamera : public Camera {
     DeviceInfo devInfo_;
     MV_CC_DEVICE_INFO sdkDevInfo_; ///< Original SDK struct kept for re-open
 
-    void* handle_{nullptr}; ///< SDK device handle
+    std::atomic<void*> handle_{nullptr}; ///< SDK device handle (atomic for thread-safe read)
 
     // State
     mutable std::mutex stateMutex_;

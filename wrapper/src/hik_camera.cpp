@@ -120,12 +120,13 @@ HikCamera::~HikCamera() {
         reconnectThread_.join();
 
     // Close the device if still open.
-    if (handle_) {
+    void* h = handle_.load();
+    if (h) {
         if (grabbing_.load())
             stopGrabbingInternal();
-        MV_CC_CloseDevice(handle_);
-        MV_CC_DestroyHandle(handle_);
-        handle_ = nullptr;
+        handle_.store(nullptr);
+        MV_CC_CloseDevice(h);
+        MV_CC_DestroyHandle(h);
     }
 }
 
@@ -134,7 +135,7 @@ HikCamera::~HikCamera() {
 // ======================================================================== //
 
 bool HikCamera::open() {
-    if (handle_) {
+    if (handle_.load()) {
         // If already connected, treat as a no-op (idempotent open).
         if (connState_.load() == ConnectionState::Connected) {
             std::clog << "[HikCamera] open() called while already connected — returning true\n";
@@ -191,10 +192,10 @@ bool HikCamera::open() {
         return false;
     }
 
-    handle_ = h;
+    handle_.store(h);
 
     // Register SDK exception callback.
-    MV_CC_RegisterExceptionCallBack(handle_, sdkExceptionCallback, this);
+    MV_CC_RegisterExceptionCallBack(h, sdkExceptionCallback, this);
 
     connState_.store(ConnectionState::Connected);
     statusCbManager_.notifyAll({CameraStatus::Connected, "Camera opened", 0});
@@ -221,18 +222,21 @@ bool HikCamera::close() {
     if (reconnectThread_.joinable())
         reconnectThread_.join();
 
-    if (! handle_)
+    void* h = handle_.load();
+    if (! h)
         return true; // already closed
 
     if (grabbing_.load())
         stopGrabbingInternal();
 
-    MV_CC_RegisterExceptionCallBack(handle_, nullptr, nullptr);
-    MV_CC_RegisterImageCallBackEx(handle_, nullptr, nullptr);
+    // Claim the handle so no other thread will use it.
+    handle_.store(nullptr);
 
-    MV_CC_CloseDevice(handle_);
-    MV_CC_DestroyHandle(handle_);
-    handle_ = nullptr;
+    MV_CC_RegisterExceptionCallBack(h, nullptr, nullptr);
+    MV_CC_RegisterImageCallBackEx(h, nullptr, nullptr);
+
+    MV_CC_CloseDevice(h);
+    MV_CC_DestroyHandle(h);
 
     connState_.store(ConnectionState::Disconnected);
     statusCbManager_.notifyAll({CameraStatus::Disconnected, "Camera closed", 0});
@@ -242,9 +246,10 @@ bool HikCamera::close() {
 }
 
 bool HikCamera::isOpened() const {
-    if (! handle_)
+    void* h = handle_.load();
+    if (! h)
         return false;
-    return MV_CC_IsDeviceConnected(handle_);
+    return MV_CC_IsDeviceConnected(h);
 }
 
 // ======================================================================== //
@@ -252,7 +257,7 @@ bool HikCamera::isOpened() const {
 // ======================================================================== //
 
 bool HikCamera::applyTransportConfig(const TransportConfig& cfg) {
-    if (! handle_)
+    if (! handle_.load())
         return false;
 
     // Save to desired state.
@@ -271,36 +276,37 @@ bool HikCamera::applyTransportConfig(const TransportConfig& cfg) {
 }
 
 bool HikCamera::applyGigETransport(const GigETransportConfig& cfg) {
-    if (! handle_)
+    void* h = handle_.load();
+    if (! h)
         return false;
 
     // Packet size: 0 means auto-detect.
     int pktSize = cfg.packetSize;
     if (pktSize <= 0)
-        pktSize = MV_CC_GetOptimalPacketSize(handle_);
+        pktSize = MV_CC_GetOptimalPacketSize(h);
 
     if (pktSize > 0) {
-        if (MV_CC_SetIntValue(handle_, "GevSCPSPacketSize", pktSize) != MV_OK)
+        if (MV_CC_SetIntValue(h, "GevSCPSPacketSize", pktSize) != MV_OK)
             std::cerr << "[HikCamera] Failed to set GevSCPSPacketSize\n";
     }
 
     // Heartbeat timeout.
     {
         MVCC_INTVALUE_EX hb{};
-        if (MV_CC_GetIntValueEx(handle_, "GevHeartbeatTimeout", &hb) == MV_OK) {
+        if (MV_CC_GetIntValueEx(h, "GevHeartbeatTimeout", &hb) == MV_OK) {
             int64_t val = std::max((int64_t) hb.nMin,
                                    std::min((int64_t) cfg.heartbeatTimeoutMs, (int64_t) hb.nMax));
-            MV_CC_SetIntValueEx(handle_, "GevHeartbeatTimeout", val);
+            MV_CC_SetIntValueEx(h, "GevHeartbeatTimeout", val);
         }
     }
 
     // Inter-packet delay.
     if (cfg.interPacketDelayNs > 0) {
         MVCC_INTVALUE_EX ipd{};
-        if (MV_CC_GetIntValueEx(handle_, "GevSCPD", &ipd) == MV_OK) {
+        if (MV_CC_GetIntValueEx(h, "GevSCPD", &ipd) == MV_OK) {
             int64_t val = std::max((int64_t) ipd.nMin,
                                    std::min((int64_t) cfg.interPacketDelayNs, (int64_t) ipd.nMax));
-            MV_CC_SetIntValueEx(handle_, "GevSCPD", val);
+            MV_CC_SetIntValueEx(h, "GevSCPD", val);
         }
     }
 
@@ -308,13 +314,14 @@ bool HikCamera::applyGigETransport(const GigETransportConfig& cfg) {
 }
 
 bool HikCamera::applyUSB3Transport(const USB3TransportConfig& cfg) {
-    if (! handle_)
+    void* h = handle_.load();
+    if (! h)
         return false;
 
-    if (MV_CC_SetIntValue(handle_, "StreamTransferSize", cfg.transferSize) != MV_OK)
+    if (MV_CC_SetIntValue(h, "StreamTransferSize", cfg.transferSize) != MV_OK)
         std::cerr << "[HikCamera] Failed to set StreamTransferSize\n";
 
-    if (MV_CC_SetIntValue(handle_, "StreamTransferCount", cfg.transferCount) != MV_OK)
+    if (MV_CC_SetIntValue(h, "StreamTransferCount", cfg.transferCount) != MV_OK)
         std::cerr << "[HikCamera] Failed to set StreamTransferCount\n";
 
     return true;
@@ -325,16 +332,17 @@ bool HikCamera::applyUSB3Transport(const USB3TransportConfig& cfg) {
 // ======================================================================== //
 
 bool HikCamera::setExposureTime(double us) {
-    if (! handle_)
+    void* h = handle_.load();
+    if (! h)
         return false;
 
     MVCC_FLOATVALUE fv{};
-    if (MV_CC_GetFloatValue(handle_, "ExposureTime", &fv) != MV_OK)
+    if (MV_CC_GetFloatValue(h, "ExposureTime", &fv) != MV_OK)
         return false;
 
     float val = static_cast<float>(std::max((double) fv.fMin, std::min(us, (double) fv.fMax)));
 
-    bool ok = (MV_CC_SetFloatValue(handle_, "ExposureTime", val) == MV_OK);
+    bool ok = (MV_CC_SetFloatValue(h, "ExposureTime", val) == MV_OK);
     if (ok) {
         std::lock_guard<std::mutex> lk(desiredMutex_);
         desired_.exposureUs = us;
@@ -343,11 +351,12 @@ bool HikCamera::setExposureTime(double us) {
 }
 
 bool HikCamera::getExposureTime(double& us, double& minUs, double& maxUs) {
-    if (! handle_)
+    void* h = handle_.load();
+    if (! h)
         return false;
 
     MVCC_FLOATVALUE fv{};
-    if (MV_CC_GetFloatValue(handle_, "ExposureTime", &fv) != MV_OK)
+    if (MV_CC_GetFloatValue(h, "ExposureTime", &fv) != MV_OK)
         return false;
 
     us = fv.fCurValue;
@@ -357,16 +366,17 @@ bool HikCamera::getExposureTime(double& us, double& minUs, double& maxUs) {
 }
 
 bool HikCamera::setGain(double dB) {
-    if (! handle_)
+    void* h = handle_.load();
+    if (! h)
         return false;
 
     MVCC_FLOATVALUE fv{};
-    if (MV_CC_GetFloatValue(handle_, "Gain", &fv) != MV_OK)
+    if (MV_CC_GetFloatValue(h, "Gain", &fv) != MV_OK)
         return false;
 
     float val = static_cast<float>(std::max((double) fv.fMin, std::min(dB, (double) fv.fMax)));
 
-    bool ok = (MV_CC_SetFloatValue(handle_, "Gain", val) == MV_OK);
+    bool ok = (MV_CC_SetFloatValue(h, "Gain", val) == MV_OK);
     if (ok) {
         std::lock_guard<std::mutex> lk(desiredMutex_);
         desired_.gainDb = dB;
@@ -375,11 +385,12 @@ bool HikCamera::setGain(double dB) {
 }
 
 bool HikCamera::getGain(double& dB, double& minDb, double& maxDb) {
-    if (! handle_)
+    void* h = handle_.load();
+    if (! h)
         return false;
 
     MVCC_FLOATVALUE fv{};
-    if (MV_CC_GetFloatValue(handle_, "Gain", &fv) != MV_OK)
+    if (MV_CC_GetFloatValue(h, "Gain", &fv) != MV_OK)
         return false;
 
     dB = fv.fCurValue;
@@ -398,7 +409,7 @@ bool HikCamera::configure(const GrabConfig& cfg) {
         desired_.grabConfig = cfg;
     }
 
-    if (! handle_)
+    if (! handle_.load())
         return true; // Stored; will be applied on next open/reconnect.
 
     return applyTriggerSettings(cfg);
@@ -425,22 +436,22 @@ unsigned int HikCamera::triggerSourceToSdk(TriggerSource src) {
 }
 
 bool HikCamera::applyTriggerSettings(const GrabConfig& cfg) {
-    if (! handle_)
+    void* h = handle_.load();
+    if (! h)
         return false;
 
     bool useTrigger = (cfg.mode == GrabMode::SnapSync || cfg.mode == GrabMode::TriggerCallback);
 
-    MV_CC_SetEnumValue(handle_, "TriggerMode",
-                       useTrigger ? MV_TRIGGER_MODE_ON : MV_TRIGGER_MODE_OFF);
+    MV_CC_SetEnumValue(h, "TriggerMode", useTrigger ? MV_TRIGGER_MODE_ON : MV_TRIGGER_MODE_OFF);
 
     if (useTrigger)
-        MV_CC_SetEnumValue(handle_, "TriggerSource", triggerSourceToSdk(cfg.triggerSource));
+        MV_CC_SetEnumValue(h, "TriggerSource", triggerSourceToSdk(cfg.triggerSource));
 
     return true;
 }
 
 bool HikCamera::startGrabbing() {
-    if (! handle_)
+    if (! handle_.load())
         return false;
 
     // Read desired config.
@@ -462,7 +473,8 @@ bool HikCamera::startGrabbing() {
 }
 
 bool HikCamera::startGrabbingInternal() {
-    if (! handle_)
+    void* h = handle_.load();
+    if (! h)
         return false;
 
     GrabConfig cfg;
@@ -473,15 +485,21 @@ bool HikCamera::startGrabbingInternal() {
 
     // Register (or clear) the SDK image callback depending on mode.
     if (cfg.mode == GrabMode::TriggerCallback || cfg.mode == GrabMode::StreamCallback) {
-        int ret = MV_CC_RegisterImageCallBackEx(handle_, sdkFrameCallback, this);
+        int ret = MV_CC_RegisterImageCallBackEx(h, sdkFrameCallback, this);
+        if (ret != MV_OK) {
+            std::cerr << "[HikCamera] MV_CC_RegisterImageCallBackEx failed: 0x" << std::hex << ret
+                      << std::dec << '\n';
+            return false;
+        }
     } else {
         // SnapSync: no SDK callback; frames are fetched synchronously.
-        MV_CC_RegisterImageCallBackEx(handle_, nullptr, nullptr);
+        MV_CC_RegisterImageCallBackEx(h, nullptr, nullptr);
     }
 
-    int ret = MV_CC_StartGrabbing(handle_);
+    int ret = MV_CC_StartGrabbing(h);
     if (ret != MV_OK) {
-        std::cerr << "[HikCamera] MV_CC_StartGrabbing failed: " << ret << '\n';
+        std::cerr << "[HikCamera] MV_CC_StartGrabbing failed: 0x" << std::hex << ret << std::dec
+                  << '\n';
         return false;
     }
 
@@ -502,9 +520,10 @@ void HikCamera::stopGrabbingInternal() {
     if (! grabbing_.load())
         return;
 
-    if (handle_) {
-        MV_CC_RegisterImageCallBackEx(handle_, nullptr, nullptr);
-        MV_CC_StopGrabbing(handle_);
+    void* h = handle_.load();
+    if (h) {
+        MV_CC_RegisterImageCallBackEx(h, nullptr, nullptr);
+        MV_CC_StopGrabbing(h);
     }
 
     grabbing_.store(false);
@@ -535,14 +554,20 @@ bool HikCamera::switchMode(const GrabConfig& cfg) {
         }
     } guard{switching_};
 
+    // Fast path: if already grabbing with the same config, no-op.
+    {
+        std::lock_guard<std::mutex> lk(desiredMutex_);
+        if (desired_.grabConfig == cfg && grabbing_.load())
+            return true;
+    }
+
     // 1. Stop current acquisition (safe even if already stopped).
     stopGrabbingInternal();
 
-    // 2. Update desired state.
+    // 2. Update desired config (but NOT the grabbing flag yet).
     {
         std::lock_guard<std::mutex> lk(desiredMutex_);
         desired_.grabConfig = cfg;
-        desired_.grabbing = true;
     }
 
     // 3. Apply trigger settings (SDK call – no lock held).
@@ -555,6 +580,13 @@ bool HikCamera::switchMode(const GrabConfig& cfg) {
         std::lock_guard<std::mutex> lk(stateMutex_);
         currentMode_ = cfg.mode;
     }
+
+    // 5. Only mark desired_.grabbing after we know the outcome.
+    {
+        std::lock_guard<std::mutex> lk(desiredMutex_);
+        desired_.grabbing = ok;
+    }
+
     return ok;
 }
 
@@ -563,7 +595,8 @@ bool HikCamera::switchMode(const GrabConfig& cfg) {
 // ======================================================================== //
 
 std::optional<ImageFrame> HikCamera::snapSync() {
-    if (! handle_ || ! grabbing_.load())
+    void* h = handle_.load();
+    if (! h || ! grabbing_.load())
         return std::nullopt;
 
     // If the camera is reconnecting, return immediately to avoid blocking on
@@ -582,19 +615,19 @@ std::optional<ImageFrame> HikCamera::snapSync() {
     for (int attempt = 0; attempt < retries; ++attempt) {
         // Fire software trigger if configured.
         if (cfg.triggerSource == TriggerSource::Software) {
-            if (MV_CC_SetCommandValue(handle_, "TriggerSoftware") != MV_OK)
+            if (MV_CC_SetCommandValue(h, "TriggerSoftware") != MV_OK)
                 std::cerr << "[HikCamera] TriggerSoftware command failed\n";
         }
 
         MV_FRAME_OUT frame{};
-        int ret = MV_CC_GetImageBuffer(handle_, &frame, cfg.snapTimeoutMs);
+        int ret = MV_CC_GetImageBuffer(h, &frame, cfg.snapTimeoutMs);
         if (ret != MV_OK) {
             std::cerr << "[HikCamera] GetImageBuffer failed: " << ret << '\n';
             continue;
         }
 
         ImageFrame result = convertToFrame(frame.pBufAddr, &frame.stFrameInfo);
-        MV_CC_FreeImageBuffer(handle_, &frame);
+        MV_CC_FreeImageBuffer(h, &frame);
 
         if (result.lostPackets == 0 || attempt == retries - 1)
             return result;
@@ -608,7 +641,8 @@ std::optional<ImageFrame> HikCamera::snapSync() {
 // ======================================================================== //
 
 std::optional<ImageFrame> HikCamera::grabOne(unsigned int timeoutMs) {
-    if (! handle_ || ! grabbing_.load())
+    void* h = handle_.load();
+    if (! h || ! grabbing_.load())
         return std::nullopt;
 
     // ------------------------------------------------------------------ //
@@ -685,7 +719,7 @@ std::optional<ImageFrame> HikCamera::grabOne(unsigned int timeoutMs) {
         (mode == GrabMode::TriggerCallback && cfg.triggerSource != TriggerSource::Software);
 
     if (isHardwareTrigger) {
-        int ret = MV_CC_SetEnumValue(handle_, "TriggerSource", MV_TRIGGER_SOURCE_SOFTWARE);
+        int ret = MV_CC_SetEnumValue(h, "TriggerSource", MV_TRIGGER_SOURCE_SOFTWARE);
         if (ret != MV_OK)
             std::cerr << "[HikCamera] grabOne: failed to switch TriggerSource "
                          "to Software (0x"
@@ -702,14 +736,14 @@ std::optional<ImageFrame> HikCamera::grabOne(unsigned int timeoutMs) {
                 MV_CC_SetEnumValue(handle, "TriggerSource", originalSdkSource);
             }
         }
-    } triggerGuard{handle_, isHardwareTrigger, triggerSourceToSdk(cfg.triggerSource)};
+    } triggerGuard{h, isHardwareTrigger, triggerSourceToSdk(cfg.triggerSource)};
 
     // ------------------------------------------------------------------ //
     // Fire software trigger if in any TriggerCallback sub-mode.           //
     // (StreamCallback needs no trigger — continuous frames flow in.)       //
     // ------------------------------------------------------------------ //
     if (mode == GrabMode::TriggerCallback) {
-        int ret = MV_CC_SetCommandValue(handle_, "TriggerSoftware");
+        int ret = MV_CC_SetCommandValue(h, "TriggerSoftware");
         if (ret != MV_OK)
             std::cerr << "[HikCamera] grabOne: TriggerSoftware failed (0x" << std::hex << ret
                       << std::dec << ")\n";
@@ -732,9 +766,10 @@ std::optional<ImageFrame> HikCamera::grabOne(unsigned int timeoutMs) {
 // ======================================================================== //
 
 bool HikCamera::sendSoftTrigger() {
-    if (! handle_)
+    void* h = handle_.load();
+    if (! h)
         return false;
-    return MV_CC_SetCommandValue(handle_, "TriggerSoftware") == MV_OK;
+    return MV_CC_SetCommandValue(h, "TriggerSoftware") == MV_OK;
 }
 
 // ======================================================================== //
@@ -920,12 +955,15 @@ void HikCamera::reconnectLoop() {
             break;
 
         // Destroy the old handle (if any).
-        if (handle_) {
-            MV_CC_RegisterExceptionCallBack(handle_, nullptr, nullptr);
-            MV_CC_RegisterImageCallBackEx(handle_, nullptr, nullptr);
-            MV_CC_CloseDevice(handle_);
-            MV_CC_DestroyHandle(handle_);
-            handle_ = nullptr;
+        {
+            void* oldH = handle_.load();
+            if (oldH) {
+                handle_.store(nullptr);
+                MV_CC_RegisterExceptionCallBack(oldH, nullptr, nullptr);
+                MV_CC_RegisterImageCallBackEx(oldH, nullptr, nullptr);
+                MV_CC_CloseDevice(oldH);
+                MV_CC_DestroyHandle(oldH);
+            }
         }
 
         int retryCount = 0;
@@ -956,8 +994,8 @@ void HikCamera::reconnectLoop() {
             if (found) {
                 void* h = nullptr;
                 if (MV_CC_CreateHandle(&h, &sdkDevInfo_) == MV_OK && MV_CC_OpenDevice(h) == MV_OK) {
-                    handle_ = h;
-                    MV_CC_RegisterExceptionCallBack(handle_, sdkExceptionCallback, this);
+                    handle_.store(h);
+                    MV_CC_RegisterExceptionCallBack(h, sdkExceptionCallback, this);
 
                     // Restore desired state.
                     DesiredState ds;
@@ -967,10 +1005,7 @@ void HikCamera::reconnectLoop() {
                     }
 
                     // Apply transport config.
-                    if (ds.transportConfig.gige.heartbeatTimeoutMs > 0 ||
-                        ds.transportConfig.gige.packetSize > 0) {
-                        applyGigETransport(ds.transportConfig.gige);
-                    }
+                    applyTransportConfig(ds.transportConfig);
 
                     // Apply camera parameters.
                     if (ds.exposureUs > 0)
