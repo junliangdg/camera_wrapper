@@ -24,6 +24,8 @@
 
 #include <atomic>
 #include <condition_variable>
+#include <future>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <thread>
@@ -78,7 +80,7 @@ class HikCamera : public Camera {
     GrabMode currentMode() const override;
     bool switchMode(const GrabConfig& cfg) override;
 
-    std::optional<ImageFrame> snapSync() override;
+    std::optional<ImageFrame> grabOne(unsigned int timeoutMs) override;
 
     bool sendSoftTrigger() override;
 
@@ -110,6 +112,13 @@ class HikCamera : public Camera {
 
     /// Set trigger mode on/off and configure trigger source.
     bool applyTriggerSettings(const GrabConfig& cfg);
+
+    /// Synchronous single-frame grab via SDK polling (SnapSync mode only).
+    /// Uses MV_CC_GetImageBuffer with lost-packet retry.
+    std::optional<ImageFrame> snapSync();
+
+    /// Convert wrapper TriggerSource enum to SDK MV_TRIGGER_SOURCE_xxx value.
+    static unsigned int triggerSourceToSdk(TriggerSource src);
 
     /// Internal stop – does NOT lock stateMutex_.  Caller must ensure safety.
     void stopGrabbingInternal();

@@ -392,38 +392,37 @@ bool HikCamera::configure(const GrabConfig& cfg) {
     return applyTriggerSettings(cfg);
 }
 
+// ======================================================================== //
+//  Helper: TriggerSource → SDK enum                                         //
+// ======================================================================== //
+
+unsigned int HikCamera::triggerSourceToSdk(TriggerSource src) {
+    switch (src) {
+        case TriggerSource::Software:
+            return MV_TRIGGER_SOURCE_SOFTWARE;
+        case TriggerSource::Line0:
+            return MV_TRIGGER_SOURCE_LINE0;
+        case TriggerSource::Line1:
+            return MV_TRIGGER_SOURCE_LINE1;
+        case TriggerSource::Line2:
+            return MV_TRIGGER_SOURCE_LINE2;
+        case TriggerSource::Line3:
+            return MV_TRIGGER_SOURCE_LINE3;
+    }
+    return MV_TRIGGER_SOURCE_SOFTWARE; // fallback
+}
+
 bool HikCamera::applyTriggerSettings(const GrabConfig& cfg) {
     if (! handle_)
         return false;
 
     bool useTrigger = (cfg.mode == GrabMode::SnapSync || cfg.mode == GrabMode::TriggerCallback);
 
-    // Set trigger mode.
     MV_CC_SetEnumValue(handle_, "TriggerMode",
                        useTrigger ? MV_TRIGGER_MODE_ON : MV_TRIGGER_MODE_OFF);
 
-    if (useTrigger) {
-        // Map TriggerSource enum to SDK enum.
-        unsigned int sdkSrc = MV_TRIGGER_SOURCE_SOFTWARE;
-        switch (cfg.triggerSource) {
-            case TriggerSource::Software:
-                sdkSrc = MV_TRIGGER_SOURCE_SOFTWARE;
-                break;
-            case TriggerSource::Line0:
-                sdkSrc = MV_TRIGGER_SOURCE_LINE0;
-                break;
-            case TriggerSource::Line1:
-                sdkSrc = MV_TRIGGER_SOURCE_LINE1;
-                break;
-            case TriggerSource::Line2:
-                sdkSrc = MV_TRIGGER_SOURCE_LINE2;
-                break;
-            case TriggerSource::Line3:
-                sdkSrc = MV_TRIGGER_SOURCE_LINE3;
-                break;
-        }
-        MV_CC_SetEnumValue(handle_, "TriggerSource", sdkSrc);
-    }
+    if (useTrigger)
+        MV_CC_SetEnumValue(handle_, "TriggerSource", triggerSourceToSdk(cfg.triggerSource));
 
     return true;
 }
@@ -548,7 +547,7 @@ bool HikCamera::switchMode(const GrabConfig& cfg) {
 }
 
 // ======================================================================== //
-//  Camera – Synchronous grab                                                //
+//  Camera – Synchronous grab (SnapSync internal path)                       //
 // ======================================================================== //
 
 std::optional<ImageFrame> HikCamera::snapSync() {
@@ -585,6 +584,130 @@ std::optional<ImageFrame> HikCamera::snapSync() {
     }
 
     return std::nullopt;
+}
+
+// ======================================================================== //
+//  Camera – grabOne (universal synchronous single-frame grab)               //
+// ======================================================================== //
+
+std::optional<ImageFrame> HikCamera::grabOne(unsigned int timeoutMs) {
+    if (! handle_ || ! grabbing_.load())
+        return std::nullopt;
+
+    // ------------------------------------------------------------------ //
+    // Read current state snapshot (lock → read → unlock → act).           //
+    // ------------------------------------------------------------------ //
+    GrabMode mode;
+    GrabConfig cfg;
+    {
+        std::lock_guard<std::mutex> lk(stateMutex_);
+        mode = currentMode_;
+    }
+    {
+        std::lock_guard<std::mutex> lk(desiredMutex_);
+        cfg = desired_.grabConfig;
+    }
+
+    // ------------------------------------------------------------------ //
+    // SnapSync mode: SDK callback is nullptr, frameCbManager_ is never    //
+    // driven.  Delegate to the synchronous polling path.                  //
+    // ------------------------------------------------------------------ //
+    if (mode == GrabMode::SnapSync)
+        return snapSync();
+
+    // ------------------------------------------------------------------ //
+    // Callback modes (StreamCallback / TriggerCallback):                  //
+    // Register a transient one-shot callback via frameCbManager_.         //
+    //                                                                      //
+    // Thread-safety note:                                                  //
+    //   FrameCallbackManager::notifyAll() snapshots the callback map and  //
+    //   then invokes from the snapshot.  Even after unregisterCallback(),  //
+    //   the lambda may still be called from an in-flight snapshot.         //
+    //   We MUST use shared_ptr to hold the promise state — capturing       //
+    //   by reference would create a dangling-reference UB if the           //
+    //   snapshot outlives this stack frame (timeout path).                  //
+    // ------------------------------------------------------------------ //
+
+    struct SharedState {
+        std::mutex mtx;
+        std::promise<ImageFrame> promise;
+        bool fulfilled{false};
+    };
+    auto state = std::make_shared<SharedState>();
+    auto future = state->promise.get_future();
+
+    auto cbId = frameCbManager_.registerCallback([state](const ImageFrame& frame) {
+        std::lock_guard<std::mutex> lk(state->mtx);
+        if (! state->fulfilled) {
+            state->fulfilled = true;
+            try {
+                state->promise.set_value(frame);
+            } catch (...) {
+                // promise already satisfied — ignore
+            }
+        }
+    });
+
+    // RAII guard: unregister callback on every exit path.
+    struct CbGuard {
+        FrameCallbackManager& mgr;
+        FrameCallbackManager::CallbackId id;
+        ~CbGuard() {
+            mgr.unregisterCallback(id);
+        }
+    } cbGuard{frameCbManager_, cbId};
+
+    // ------------------------------------------------------------------ //
+    // Hardware trigger → temporary switch to software trigger.            //
+    //                                                                      //
+    // This is the industry-standard approach (MVS client does the same).  //
+    // During the switch window (~10-50 ms), hardware trigger signals are  //
+    // missed.  RAII ensures the original source is always restored.        //
+    // ------------------------------------------------------------------ //
+    const bool isHardwareTrigger =
+        (mode == GrabMode::TriggerCallback && cfg.triggerSource != TriggerSource::Software);
+
+    if (isHardwareTrigger) {
+        int ret = MV_CC_SetEnumValue(handle_, "TriggerSource", MV_TRIGGER_SOURCE_SOFTWARE);
+        if (ret != MV_OK)
+            std::cerr << "[HikCamera] grabOne: failed to switch TriggerSource "
+                         "to Software (0x"
+                      << std::hex << ret << std::dec << ")\n";
+    }
+
+    // RAII guard: restore hardware trigger source on every exit path.
+    struct TriggerGuard {
+        void* handle;
+        bool needRestore;
+        unsigned int originalSdkSource;
+        ~TriggerGuard() {
+            if (needRestore && handle) {
+                MV_CC_SetEnumValue(handle, "TriggerSource", originalSdkSource);
+            }
+        }
+    } triggerGuard{handle_, isHardwareTrigger, triggerSourceToSdk(cfg.triggerSource)};
+
+    // ------------------------------------------------------------------ //
+    // Fire software trigger if in any TriggerCallback sub-mode.           //
+    // (StreamCallback needs no trigger — continuous frames flow in.)       //
+    // ------------------------------------------------------------------ //
+    if (mode == GrabMode::TriggerCallback) {
+        int ret = MV_CC_SetCommandValue(handle_, "TriggerSoftware");
+        if (ret != MV_OK)
+            std::cerr << "[HikCamera] grabOne: TriggerSoftware failed (0x" << std::hex << ret
+                      << std::dec << ")\n";
+    }
+
+    // ------------------------------------------------------------------ //
+    // Block until the one-shot callback delivers a frame, or timeout.     //
+    // ------------------------------------------------------------------ //
+    if (future.wait_for(std::chrono::milliseconds(timeoutMs)) == std::future_status::ready)
+        return future.get();
+
+    return std::nullopt;
+
+    // ~TriggerGuard: restores hardware trigger source (if switched)
+    // ~CbGuard:      unregisters one-shot callback from frameCbManager_
 }
 
 // ======================================================================== //

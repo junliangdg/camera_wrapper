@@ -34,7 +34,7 @@ enum class ConnectionState {
 ///   5. Register frame callbacks with registerFrameCallback().
 ///   6. Call configure() / switchMode() to select the grab mode.
 ///   7. Call startGrabbing().
-///   8. Consume frames via snapSync() or the registered callbacks.
+///   8. Consume frames via grabOne() or the registered callbacks.
 ///   9. Call stopGrabbing() then close() when done.
 class CAMERA_WRAPPER_API Camera {
   public:
@@ -107,17 +107,34 @@ class CAMERA_WRAPPER_API Camera {
     virtual bool switchMode(const GrabConfig& cfg) = 0;
 
     // ------------------------------------------------------------------ //
-    //  Synchronous grab (SnapSync mode)                                    //
+    //  Synchronous single-frame grab (works in any mode)                  //
     // ------------------------------------------------------------------ //
 
-    /// Block until one frame is captured and return it.
+    /// Synchronously grab a single frame regardless of the current mode.
     ///
-    /// In SnapSync mode with a software trigger source, the trigger is fired
-    /// automatically.  With a hardware trigger source, the call blocks until
-    /// the external signal arrives.
+    /// Behaviour per mode:
+    ///   - StreamCallback          : intercepts the next frame from the
+    ///                               continuous stream (no trigger needed).
+    ///   - TriggerCallback+Software: fires a software trigger and waits for
+    ///                               the resulting frame.
+    ///   - TriggerCallback+Hardware: temporarily switches the trigger source
+    ///                               to Software, fires a trigger, captures
+    ///                               the frame, then restores the original
+    ///                               hardware source.  ⚠️ Hardware triggers
+    ///                               arriving during the brief switch window
+    ///                               (~10-50 ms) will be missed.
+    ///   - SnapSync                : uses the SDK synchronous polling path
+    ///                               with lost-packet retry.
     ///
+    /// This is the preferred way to grab a single frame for teaching,
+    /// debugging, or manual inspection while a production loop is running.
+    ///
+    /// Thread-safety: safe to call from any thread.  Concurrent calls are
+    /// all served (each registers its own one-shot callback).
+    ///
+    /// @param timeoutMs  Maximum wait time in milliseconds.
     /// @return The captured frame, or std::nullopt on timeout / error.
-    virtual std::optional<ImageFrame> snapSync() = 0;
+    virtual std::optional<ImageFrame> grabOne(unsigned int timeoutMs) = 0;
 
     // ------------------------------------------------------------------ //
     //  Software trigger                                                    //

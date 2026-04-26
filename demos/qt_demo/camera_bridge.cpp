@@ -170,7 +170,7 @@ bool CameraBridge::sendSoftTrigger(int cameraIndex) {
     if (! s)
         return false;
 
-    // SnapSync mode: snapSync() blocks – run it on a worker thread so the
+    // SnapSync mode: grabOne() blocks – run it on a worker thread so the
     // Qt main thread is never stalled.
     if (s->camera->currentMode() == GrabMode::SnapSync) {
         bool expected = false;
@@ -181,7 +181,7 @@ bool CameraBridge::sendSoftTrigger(int cameraIndex) {
         FrameQueue* queue = s->previewQueue.get();
 
         QThreadPool::globalInstance()->start([this, cameraIndex, cam, queue]() {
-            auto result = cam->snapSync();
+            auto result = cam->grabOne(3000);
             slots_[cameraIndex]->snapRunning.store(false);
 
             if (! result)

@@ -4,10 +4,9 @@ namespace camera_wrapper {
 
 /// The three acquisition modes supported by the wrapper.
 enum class GrabMode {
-    /// Caller-driven synchronous grab.
-    /// snapSync() blocks until one frame is returned.
-    /// The camera is put into trigger mode; if the trigger source is
-    /// SoftwareTrigger, snapSync() fires the trigger automatically.
+    /// Caller-driven synchronous grab via SDK polling.
+    /// grabOne() delegates to the internal snapSync() path which blocks
+    /// until one frame is returned, with automatic lost-packet retry.
     SnapSync,
 
     /// Trigger-driven callback mode.
@@ -37,11 +36,13 @@ struct GrabConfig {
     GrabMode mode{GrabMode::StreamCallback};
     TriggerSource triggerSource{TriggerSource::Software};
 
-    /// Timeout for snapSync() in milliseconds.
-    /// Ignored in callback modes.
+    /// Timeout for the internal snapSync() polling path in milliseconds.
+    /// Used by grabOne() when the current mode is SnapSync.
+    /// Ignored in callback modes (grabOne's own timeoutMs applies instead).
     int snapTimeoutMs{3000};
 
-    /// Number of retry attempts in snapSync() when a frame has lost packets.
+    /// Number of retry attempts for lost-packet frames in SnapSync mode.
+    /// Used by grabOne() → snapSync() internally.
     int snapRetryCount{3};
 };
 

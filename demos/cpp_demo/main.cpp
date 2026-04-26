@@ -62,7 +62,7 @@ static void printQueueStats(const FrameQueueStats& s, const std::string& label) 
 // ======================================================================== //
 
 static void demoSnapSync(Camera& cam) {
-    std::cout << "\n=== Demo 1: SnapSync ===\n";
+    std::cout << "\n=== Demo 1: SnapSync (via grabOne) ===\n";
 
     GrabConfig cfg;
     cfg.mode = GrabMode::SnapSync;
@@ -76,15 +76,14 @@ static void demoSnapSync(Camera& cam) {
     }
 
     std::cout << "Grabbing one frame synchronously...\n";
-    auto frame = cam.snapSync();
+    auto frame = cam.grabOne(3000);
     if (! frame) {
-        std::cerr << "snapSync() returned no frame\n";
+        std::cerr << "grabOne() returned no frame\n";
         return;
     }
 
     printFrameInfo(*frame);
 
-    // Save to disk.
     if (! frame->image.empty()) {
         cv::imwrite("snap_sync_frame.png", frame->image);
         std::cout << "  Saved to snap_sync_frame.png\n";
