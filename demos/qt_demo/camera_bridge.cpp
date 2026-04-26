@@ -213,6 +213,48 @@ bool CameraBridge::sendSoftTrigger(int cameraIndex) {
     return s->camera->sendSoftTrigger();
 }
 
+bool CameraBridge::grabOne(int cameraIndex) {
+    CameraSlot* s = slotAt(cameraIndex);
+    if (! s)
+        return false;
+
+    // Serialize with any concurrent snap / trigger operation on this slot.
+    bool expected = false;
+    if (! s->snapRunning.compare_exchange_strong(expected, true))
+        return false; // a grab is already in flight
+
+    Camera* cam = s->camera.get();
+    FrameQueue* queue = s->previewQueue.get();
+
+    // Run the blocking grab on a worker thread so the Qt main thread is
+    // never stalled regardless of the current acquisition mode.
+    QThreadPool::globalInstance()->start([this, cameraIndex, cam, queue]() {
+        auto result = cam->grabOne(3000);
+        slots_[cameraIndex]->snapRunning.store(false);
+
+        if (! result)
+            return;
+
+        queue->push(*result);
+        auto popped = queue->pop(0);
+
+        cv::Mat img = popped ? popped->image : result->image;
+        quint64 fid = result->frameId;
+        quint64 ts = result->timestampNs;
+
+        QMetaObject::invokeMethod(
+            this,
+            [this, cameraIndex, img, fid, ts, queue]() {
+                emit frameReady(cameraIndex, img, fid, ts);
+                auto st = queue->stats();
+                emit queueStatsUpdated(cameraIndex, st.totalPushed, st.totalPopped, st.dropCount);
+            },
+            Qt::QueuedConnection);
+    });
+
+    return true;
+}
+
 // ======================================================================== //
 //  Per-camera parameter control                                              //
 // ======================================================================== //

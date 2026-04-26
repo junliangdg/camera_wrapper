@@ -111,6 +111,7 @@ MainWindow::MainWindow(QWidget* parent)
     connect(ui_->modeComboBox, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
             &MainWindow::onModeChanged);
     connect(ui_->softTriggerButton, &QPushButton::clicked, this, &MainWindow::onSoftTriggerClicked);
+    connect(ui_->grabOneButton, &QPushButton::clicked, this, &MainWindow::onGrabOneClicked);
 
     connect(ui_->exposureSlider, &QSlider::valueChanged, this,
             &MainWindow::onExposureSliderChanged);
@@ -320,6 +321,40 @@ void MainWindow::onSoftTriggerClicked() {
         bridge_->sendSoftTrigger(camIdx);
 }
 
+void MainWindow::onGrabOneClicked() {
+    int camIdx = selectedCameraIndex();
+    if (camIdx < 0)
+        return;
+
+    // Disable the button while the async grab is in flight to prevent double
+    // clicks.  It will be re-enabled via the frameReady signal path or after a
+    // short timeout.  Using a simple one-shot approach: just call it and show
+    // the current mode in the status bar so the user knows what happened.
+    ui_->grabOneButton->setEnabled(false);
+
+    GrabMode mode = bridge_->currentMode(camIdx);
+    QString modeStr;
+    switch (mode) {
+        case GrabMode::StreamCallback:
+            modeStr = QStringLiteral("StreamCallback");
+            break;
+        case GrabMode::TriggerCallback:
+            modeStr = QStringLiteral("TriggerCallback");
+            break;
+        case GrabMode::SnapSync:
+            modeStr = QStringLiteral("SnapSync");
+            break;
+    }
+    statusBar()->showMessage(
+        QStringLiteral("Cam %1 – GrabOne requested (mode: %2)…").arg(camIdx).arg(modeStr));
+
+    if (! bridge_->grabOne(camIdx)) {
+        statusBar()->showMessage(
+            QStringLiteral("Cam %1 – GrabOne failed (grab already in flight?)").arg(camIdx));
+        ui_->grabOneButton->setEnabled(true);
+    }
+}
+
 void MainWindow::onTriggerSourceChanged(int /*index*/) {
     onModeChanged(ui_->modeComboBox->currentIndex());
 }
@@ -385,6 +420,11 @@ void MainWindow::onFrameReady(int cameraIndex, cv::Mat image, quint64 frameId,
 
     if (panels_.contains(cameraIndex))
         panels_[cameraIndex]->displayFrame(image);
+
+    // Re-enable Grab One after any frame delivery from the selected camera
+    // (covers both the async grabOne result and regular stream frames).
+    if (cameraIndex == selectedCameraIndex())
+        ui_->grabOneButton->setEnabled(true);
 }
 
 void MainWindow::onConnectionStateChanged(int cameraIndex, QString statusText) {
@@ -482,6 +522,9 @@ void MainWindow::setControlsEnabled(bool cameraSelected) {
                                           ui_->modeComboBox->currentIndex() == 2);
     ui_->softTriggerButton->setEnabled(triggerMode &&
                                        ui_->triggerSourceComboBox->currentIndex() == 0);
+
+    // GrabOne works in any mode – enable whenever a camera is selected.
+    ui_->grabOneButton->setEnabled(cameraSelected);
 }
 
 void MainWindow::addCameraPanel(int cameraIndex, const QString& name) {

@@ -171,6 +171,29 @@
            </property>
           </widget>
          </item>
+         <item>
+          <widget class="QFrame" name="grabOneSeparator">
+           <property name="frameShape">
+            <enum>QFrame::Shape::HLine</enum>
+           </property>
+           <property name="frameShadow">
+            <enum>QFrame::Shadow::Sunken</enum>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QPushButton" name="grabOneButton">
+           <property name="enabled">
+            <bool>false</bool>
+           </property>
+           <property name="text">
+            <string>Grab One</string>
+           </property>
+           <property name="toolTip">
+            <string>Synchronously grab a single frame regardless of current mode</string>
+           </property>
+          </widget>
+         </item>
         </layout>
        </widget>
       </item>

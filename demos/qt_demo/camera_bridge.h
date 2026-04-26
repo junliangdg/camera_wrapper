@@ -42,7 +42,6 @@
 #include <opencv2/core.hpp>
 #include <vector>
 
-
 namespace camera_wrapper {
 class CameraEnumerator;
 } // namespace camera_wrapper
@@ -109,6 +108,16 @@ class CameraBridge : public QObject {
 
     /// Send a software trigger to camera @p cameraIndex.
     bool sendSoftTrigger(int cameraIndex);
+
+    /// Synchronously grab a single frame from camera @p cameraIndex,
+    /// regardless of the current grab mode.  The call is non-blocking from
+    /// the caller's perspective: the actual grabOne() is dispatched to a
+    /// worker thread and the result is delivered via the frameReady() signal.
+    ///
+    /// @return true  if the async grab was successfully queued.
+    /// @return false if no camera exists at @p cameraIndex, or a grab is
+    ///               already in flight for that slot.
+    bool grabOne(int cameraIndex);
 
     // ---------------------------------------------------------------- //
     //  Per-camera parameter control                                      //

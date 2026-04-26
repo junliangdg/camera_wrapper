@@ -71,6 +71,9 @@ class MainWindow : public QMainWindow {
     // Soft trigger button
     void onSoftTriggerClicked();
 
+    // Grab One button – works in any acquisition mode
+    void onGrabOneClicked();
+
     // Parameter controls (apply to the currently selected camera)
     void onExposureSliderChanged(int value);
     void onExposureSpinChanged(double value);
