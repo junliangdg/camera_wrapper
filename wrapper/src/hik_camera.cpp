@@ -135,7 +135,19 @@ HikCamera::~HikCamera() {
 
 bool HikCamera::open() {
     if (handle_) {
-        std::cerr << "[HikCamera] open() called but handle already exists\n";
+        // If already connected, treat as a no-op (idempotent open).
+        if (connState_.load() == ConnectionState::Connected) {
+            std::clog << "[HikCamera] open() called while already connected — returning true\n";
+            return true;
+        }
+        // If the internal reconnect loop is running, do not interfere.
+        if (connState_.load() == ConnectionState::Reconnecting) {
+            std::cerr << "[HikCamera] open() called while reconnecting — skipping\n";
+            return false;
+        }
+        // Handle exists but device is in an unexpected state — log and fall through.
+        std::cerr << "[HikCamera] open() called but handle already exists (state="
+                  << static_cast<int>(connState_.load()) << ")\n";
         return false;
     }
 
@@ -552,6 +564,11 @@ bool HikCamera::switchMode(const GrabConfig& cfg) {
 
 std::optional<ImageFrame> HikCamera::snapSync() {
     if (! handle_ || ! grabbing_.load())
+        return std::nullopt;
+
+    // If the camera is reconnecting, return immediately to avoid blocking on
+    // MV_CC_GetImageBuffer() with an invalid or stale handle.
+    if (connState_.load() != ConnectionState::Connected)
         return std::nullopt;
 
     GrabConfig cfg;
