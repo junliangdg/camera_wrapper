@@ -6,6 +6,7 @@
 #include <functional>
 #include <map>
 #include <mutex>
+#include <shared_mutex>
 
 namespace camera_wrapper {
 
@@ -13,12 +14,14 @@ namespace camera_wrapper {
 ///
 /// Thread-safety model
 /// -------------------
-/// - registerCallback / unregisterCallback are protected by an internal mutex.
-/// - notifyAll acquires the same mutex to snapshot the subscriber list, then
-///   releases it before invoking callbacks.  This means:
-///     * Callbacks are never called while the mutex is held.
-///     * A subscriber can safely call unregisterCallback from within its own
-///       callback without deadlocking.
+/// - registerCallback / unregisterCallback / clear hold an exclusive write
+///   lock (std::unique_lock<std::shared_mutex>).
+/// - notifyAll / subscriberCount hold a shared read lock
+///   (std::shared_lock<std::shared_mutex>), so concurrent notifyAll() calls
+///   are allowed and the subscriber map is never copied.
+/// - If a subscriber calls unregisterCallback() from within its own callback,
+///   the write-lock acquisition will block until the current notifyAll() call
+///   returns (no deadlock; the removal takes effect after that call).
 ///   Each subscriber invocation is wrapped in try/catch so a misbehaving
 ///   subscriber cannot affect others.
 ///
@@ -44,8 +47,8 @@ class CAMERA_WRAPPER_API FrameCallbackManager {
     CallbackId registerCallback(Callback cb);
 
     /// Unregister a previously registered subscriber.
-    /// Safe to call from within a callback (will take effect after the
-    /// current notifyAll() round completes).
+    /// Safe to call from within a callback (will block until the current
+    /// notifyAll() round completes, then take effect immediately).
     void unregisterCallback(CallbackId id);
 
     /// Invoke all registered subscribers with the given frame.
@@ -60,7 +63,7 @@ class CAMERA_WRAPPER_API FrameCallbackManager {
     void clear();
 
   private:
-    mutable std::mutex mutex_;
+    mutable std::shared_mutex mutex_;
     std::map<CallbackId, Callback> callbacks_;
     CallbackId nextId_{0};
 };

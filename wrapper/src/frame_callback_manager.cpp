@@ -5,28 +5,27 @@
 namespace camera_wrapper {
 
 FrameCallbackManager::CallbackId FrameCallbackManager::registerCallback(Callback cb) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(mutex_);
     CallbackId id = nextId_++;
     callbacks_[id] = std::move(cb);
     return id;
 }
 
 void FrameCallbackManager::unregisterCallback(CallbackId id) {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(mutex_);
     callbacks_.erase(id);
 }
 
 void FrameCallbackManager::notifyAll(const ImageFrame& frame) {
-    // Snapshot the subscriber list under the lock, then release before calling.
-    // This prevents deadlock if a subscriber calls unregisterCallback() from
-    // within its own callback.
-    std::map<CallbackId, Callback> snapshot;
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        snapshot = callbacks_;
-    }
-
-    for (auto& [id, cb] : snapshot) {
+    // Hold a shared read lock so concurrent notifyAll() calls are permitted
+    // while register/unregister/clear are excluded.  The subscriber map is
+    // iterated directly without copying.
+    //
+    // If a subscriber calls unregisterCallback() from within its callback,
+    // the write-lock acquisition will block until this call returns — no
+    // deadlock, and the removal takes effect immediately afterwards.
+    std::shared_lock<std::shared_mutex> lock(mutex_);
+    for (auto& [id, cb] : callbacks_) {
         try {
             cb(frame);
         } catch (const std::exception& e) {
@@ -39,12 +38,12 @@ void FrameCallbackManager::notifyAll(const ImageFrame& frame) {
 }
 
 std::size_t FrameCallbackManager::subscriberCount() const {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::shared_lock<std::shared_mutex> lock(mutex_);
     return callbacks_.size();
 }
 
 void FrameCallbackManager::clear() {
-    std::lock_guard<std::mutex> lock(mutex_);
+    std::unique_lock<std::shared_mutex> lock(mutex_);
     callbacks_.clear();
 }
 
