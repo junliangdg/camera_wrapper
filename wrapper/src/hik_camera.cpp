@@ -898,19 +898,19 @@ ImageFrame HikCamera::convertToFrame(unsigned char* pData, MV_FRAME_OUT_INFO_EX*
 
         case PixelType_Gvsp_BayerRG8:
             raw = cv::Mat(h, w, CV_8UC1, pData);
-            cv::cvtColor(raw, result.image, cv::COLOR_BayerRG2BGR);
+            cv::cvtColor(raw, result.image, cv::COLOR_BayerRGGB2BGR);
             result.pixelFormat = PixelFormat::BayerRG8;
             break;
 
         case PixelType_Gvsp_BayerRG12:
             raw = cv::Mat(h, w, CV_16UC1, pData);
-            cv::cvtColor(raw, result.image, cv::COLOR_BayerRG2BGR);
+            cv::cvtColor(raw, result.image, cv::COLOR_BayerRGGB2BGR);
             result.pixelFormat = PixelFormat::BayerRG12;
             break;
 
         case PixelType_Gvsp_BayerRG16:
             raw = cv::Mat(h, w, CV_16UC1, pData);
-            cv::cvtColor(raw, result.image, cv::COLOR_BayerRG2BGR);
+            cv::cvtColor(raw, result.image, cv::COLOR_BayerRGGB2BGR);
             result.pixelFormat = PixelFormat::BayerRG16;
             break;
 
